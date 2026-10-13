@@ -1,0 +1,66 @@
+name: arbibot
+
+x-service: &service
+  build: .
+  image: arbibot
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 30s
+  volumes:
+    - ${ARBIBOT_DATA:-./data}:/app/data
+  logging:
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  scanner:
+    <<: *service
+    command: scanner run --quotes EUR,USDC,PLN
+    healthcheck:
+      test: find data/opportunities -name '*.jsonl' -mmin -10 | grep -q .
+      interval: 1m
+      start_period: 5m
+
+  dry:
+    <<: *service
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20
+    secrets: [federbot-okx-read, federbot-bybit-read]
+    healthcheck:
+      test: find data/bot -name '*.jsonl' -mmin -3 | grep -q .
+      interval: 1m
+      start_period: 3m
+
+  live:
+    <<: *service
+    profiles: [live]
+    command: >-
+      bot live --pair STRK/USDC --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --telegram --yes
+    secrets:
+      - federbot-okx-read
+      - federbot-bybit-read
+      - federbot-okx-trade
+      - federbot-bybit-trade
+      - federbot-telegram
+    healthcheck:
+      test: find data/live -name '*.jsonl' -mmin -3 | grep -q .
+      interval: 1m
+      start_period: 3m
+
+secrets:
+  federbot-okx-read:
+    file: ${HOME}/.arbibot/secrets/federbot-okx-read
+  federbot-bybit-read:
+    file: ${HOME}/.arbibot/secrets/federbot-bybit-read
+  federbot-okx-trade:
+    file: ${HOME}/.arbibot/secrets/federbot-okx-trade
+  federbot-bybit-trade:
+    file: ${HOME}/.arbibot/secrets/federbot-bybit-trade
+  federbot-telegram:
+    file: ${HOME}/.arbibot/secrets/federbot-telegram

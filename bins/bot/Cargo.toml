@@ -1,0 +1,19 @@
+[package]
+name = "bot"
+description = "Bot handlowy taker–taker OKX EEA ↔ Bybit EU"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+account.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["sync", "signal"] }
+venues.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio-tungstenite.workspace = true

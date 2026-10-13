@@ -1,0 +1,18 @@
+[package]
+name = "scanner"
+description = "Skaner okazji arbitrażowych na żywo (Faza 1)"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "signal"] }
+tokio-tungstenite.workspace = true
+venues.workspace = true
