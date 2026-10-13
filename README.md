@@ -5,7 +5,7 @@ Arbitraż spot OKX EEA ↔ Bybit EU w Dockerze. Rust.
 ## Uruchomienie
 
 ```bash
-docker compose build
+docker compose pull
 docker compose up -d                       # skaner, warianty na sucho, raport
 docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
@@ -14,6 +14,16 @@ docker compose logs -f live
 Ustawienia bota na żywo są w `compose.yaml`: STRK/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
 
 Warianty na sucho (`dry` i `ab-*`) różnią się jednym ustawieniem: progiem, marżą makera, opóźnieniem, rebalansem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
+
+## Obraz i wersje
+
+GitHub Actions buduje `ghcr.io/nellynelson24/arbibot-docker` z każdego tagu `vX.Y.Z` (obraz `X.Y.Z`, `X.Y`, `latest`) i z gałęzi `main` (obraz `main`). Nowa wersja:
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+Zmienne `compose.yaml`: `ARBIBOT_VERSION` (domyślnie `latest`), `ARBIBOT_DATA` (`./data`), `ARBIBOT_SECRETS` (`~/.arbibot/secrets`). Budowa lokalna: `docker build -t ghcr.io/nellynelson24/arbibot-docker:latest .`
 
 ## Klucze
 

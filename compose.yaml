@@ -1,8 +1,7 @@
 name: arbibot
 
 x-service: &service
-  build: .
-  image: arbibot
+  image: ghcr.io/nellynelson24/arbibot-docker:${ARBIBOT_VERSION:-latest}
   init: true
   restart: unless-stopped
   read_only: true
@@ -107,12 +106,12 @@ services:
 
 secrets:
   federbot-okx-read:
-    file: ${HOME}/.arbibot/secrets/federbot-okx-read
+    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-okx-read
   federbot-bybit-read:
-    file: ${HOME}/.arbibot/secrets/federbot-bybit-read
+    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-bybit-read
   federbot-okx-trade:
-    file: ${HOME}/.arbibot/secrets/federbot-okx-trade
+    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-okx-trade
   federbot-bybit-trade:
-    file: ${HOME}/.arbibot/secrets/federbot-bybit-trade
+    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-bybit-trade
   federbot-telegram:
-    file: ${HOME}/.arbibot/secrets/federbot-telegram
+    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-telegram
