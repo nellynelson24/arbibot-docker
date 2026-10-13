@@ -2,41 +2,37 @@
 
 Arbitraż spot OKX EEA ↔ Bybit EU w Dockerze. Rust.
 
-## Budowa
+## Uruchomienie
 
 ```bash
-cargo build --release
-```
-
-## Użycie
-
-```bash
-./target/release/scanner run
-./target/release/bot dry-run --pair STRK/USDC --capital 200 --size 20
-./target/release/bot live --pair STRK/USDC --size 20 --min-bps 35 --telegram
-./target/release/bot report
-```
-
-Klucze API w pęku kluczy macOS (`federbot-<giełda>-read`, `federbot-<giełda>-trade`), bez prawa wypłat. Serwer: [VPS.md](VPS.md).
-
-## Docker
-
-```bash
+docker compose build
 docker compose up -d                       # skaner i bot na sucho
-docker compose --profile live up -d live   # na żywo, bez pytania o TAK
+docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
-touch data/STOP                            # zatrzymanie handlu
 ```
 
-Sekret to plik `~/.arbibot/secrets/<usługa>` (`federbot-okx-read`, `federbot-okx-trade`, `federbot-bybit-read`, `federbot-bybit-trade`, `federbot-telegram`) z liniami `api_key=…`, `secret=…`, `passphrase=…` (OKX) albo `token=…`, `chat_id=…`, `viewers=…` (Telegram). Kontener działa jako UID 1000: na Linuksie `data/` i sekrety muszą być dla niego czytelne.
+Ustawienia bota na żywo są w `compose.yaml`: STRK/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
 
-Po błędzie zlecenia albo limicie straty bot na żywo zostawia `data/STOP`; wznowienie: usuń plik i `docker compose restart live`.
+## Klucze
+
+Pliki w `~/.arbibot/secrets/`, opis w [VPS.md](VPS.md). Klucze bez prawa wypłat; z prawem wypłat bot nie wystartuje. Kontener działa jako UID 1000: `data/` i klucze muszą być dla niego czytelne.
+
+## Zatrzymanie
+
+- `docker compose stop live` kończy pracę i anuluje zlecenia maker.
+- `touch data/STOP` albo `/stop` na Telegramie wstrzymuje handel.
+- Po błędzie zlecenia albo limicie straty bot sam tworzy `data/STOP`. Wznowienie: usuń plik i `docker compose restart live`.
+
+## Raport
+
+```bash
+docker compose exec live bot report
+```
 
 ## Struktura
 
 - `bins/bot` — bot
 - `bins/scanner` — skaner okazji
-- `bins/latency` — pomiar opóźnień
-- `bins/pair-scan` — przegląd par
+- `bins/latency`, `bins/pair-scan` — narzędzia pomocnicze
 - `crates/account` — API kont
 - `crates/venues` — giełdy i prowizje
