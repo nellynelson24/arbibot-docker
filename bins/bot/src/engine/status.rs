@@ -9,7 +9,6 @@ use crate::{report, selector};
 
 const STALL_MS: f64 = 3_000.0;
 const PAUSE_AFTER_STALL: Duration = Duration::from_secs(30);
-const REPORT_HOUR_UTC: i64 = 6;
 const DAY_MS: f64 = 86_400_000.0;
 
 impl Engine {
@@ -92,24 +91,20 @@ impl Engine {
     }
 
     fn daily_report(&mut self, now: f64) {
-        let today = selector::utc_date(now);
-        let hour = (now / 3_600_000.0).floor() as i64 % 24;
         let Some(telegram) = &self.telegram else {
             return;
         };
-
-        let sent = self
-            .data_dir
-            .join("reports")
-            .join(format!(".telegram-{today}"));
-        if self.live.is_none()
-            || hour != REPORT_HOUR_UTC
-            || self.last_report.as_deref() == Some(today.as_str())
-            || sent.exists()
-        {
+        if self.live.is_none() {
             return;
         }
-        self.last_report = Some(today);
+        let Some(sent) = report::daily_due(&self.data_dir, now) else {
+            return;
+        };
+        let day = sent.to_string_lossy().into_owned();
+        if self.last_report.as_deref() == Some(day.as_str()) {
+            return;
+        }
+        self.last_report = Some(day);
         let (data_dir, tx) = (self.data_dir.clone(), telegram.sender());
         tokio::task::spawn_blocking(move || {
             let text = match report::build(&data_dir, now - DAY_MS, now) {

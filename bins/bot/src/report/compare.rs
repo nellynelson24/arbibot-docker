@@ -44,7 +44,7 @@ pub(super) fn variants_section(
     let _ = writeln!(short, "\nWarianty (razem USDC):");
     let mut ranked = totals.clone();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    for (label, total, n) in ranked.iter().take(5) {
+    for (label, total, n) in ranked.iter().take(10) {
         let _ = writeln!(short, "{label}: {total:+.3} ({n} tr.)");
     }
     let main = totals.iter().find(|t| t.0 == "główny");

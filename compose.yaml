@@ -16,6 +16,10 @@ x-service: &service
       max-size: 10m
       max-file: "3"
 
+x-dry: &dry
+  <<: *service
+  secrets: [federbot-okx-read, federbot-bybit-read]
+
 services:
   scanner:
     <<: *service
@@ -25,16 +29,64 @@ services:
       interval: 1m
       start_period: 5m
 
-  dry:
+  report:
     <<: *service
+    command: bot report --daily --telegram
+    secrets: [federbot-telegram]
+
+  dry:
+    <<: *dry
     command: >-
       bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20
-    secrets: [federbot-okx-read, federbot-bybit-read]
     healthcheck:
       test: find data/bot -name '*.jsonl' -mmin -3 | grep -q .
       interval: 1m
       start_period: 3m
+
+  ab-prog35:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 35
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-prog35
+
+  ab-prog50:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 50
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-prog50
+
+  ab-maker10:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 10 --data-dir data/ab-maker10
+
+  ab-maker30:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 30 --data-dir data/ab-maker30
+
+  ab-szybki:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20
+      --okx-latency-ms 40 --bybit-latency-ms 100 --data-dir data/ab-szybki
+
+  ab-rebalans:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --trade-rebalance
+      --data-dir data/ab-rebalans
+
+  ab-w:
+    <<: *dry
+    command: >-
+      bot dry-run --pair W/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-w
 
   live:
     <<: *service

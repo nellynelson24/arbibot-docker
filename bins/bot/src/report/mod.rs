@@ -8,22 +8,27 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde_json::Value;
+use tokio::time::sleep;
 
 use crate::ledger::now_ms;
 use crate::telegram::Telegram;
 use compare::{agreement_section, variants_section};
 use live::live_section;
 use market::market_section;
-use stats::pl_time;
+use stats::{pl_hour, pl_time};
 use strategy::{calibration_section, maker_section};
 
 const HOUR_MS: f64 = 3_600_000.0;
 const SAME_SIGNAL_MS: f64 = 5_000.0;
 const MIN_CASES: usize = 8;
 const TELEGRAM_LIMIT: usize = 3_900;
+const DAILY_HOUR_PL: i64 = 8;
+const DAILY_CHECK: Duration = Duration::from_secs(30);
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -36,6 +41,9 @@ pub struct Args {
     #[arg(long)]
     #[arg(help = "Wyślij skrót raportu na Telegram (Tobie i widzom)")]
     telegram: bool,
+    #[arg(long)]
+    #[arg(help = "Działaj stale i rób raport codziennie o 8:00 czasu polskiego")]
+    daily: bool,
 }
 
 pub struct Report {
@@ -44,6 +52,9 @@ pub struct Report {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    if args.daily {
+        return daily(args).await;
+    }
     let until = now_ms();
     let report = build(&args.data_dir, until - args.hours * HOUR_MS, until)?;
     let path = save(&args.data_dir, &report, until)?;
@@ -52,6 +63,41 @@ pub async fn run(args: Args) -> Result<()> {
         Telegram::load()?.send_report(&report.short).await;
     }
     Ok(())
+}
+
+async fn daily(args: Args) -> Result<()> {
+    let telegram = match args.telegram {
+        true => Some(Telegram::load()?),
+        false => None,
+    };
+    println!("Raport codziennie o {DAILY_HOUR_PL}:00 czasu polskiego.");
+    loop {
+        let now = now_ms();
+        if let Some(marker) = daily_due(&args.data_dir, now) {
+            match build(&args.data_dir, now - args.hours * HOUR_MS, now) {
+                Ok(report) => {
+                    let path = save(&args.data_dir, &report, now)?;
+                    if let Some(telegram) = &telegram {
+                        telegram.send_report(&report.short).await;
+                    }
+                    println!("{} raport: {}", pl_time(now, "%d.%m %H:%M"), path.display());
+                }
+                Err(e) => println!("{} raport nieudany: {e:#}", pl_time(now, "%d.%m %H:%M")),
+            }
+            fs::write(&marker, "").with_context(|| format!("zapis {}", marker.display()))?;
+        }
+        sleep(DAILY_CHECK).await;
+    }
+}
+
+pub fn daily_due(data_dir: &Path, now: f64) -> Option<PathBuf> {
+    if pl_hour(now) != DAILY_HOUR_PL {
+        return None;
+    }
+    let dir = data_dir.join("reports");
+    fs::create_dir_all(&dir).ok()?;
+    let marker = dir.join(format!(".telegram-{}", pl_time(now, "%Y-%m-%d")));
+    (!marker.exists()).then_some(marker)
 }
 
 pub fn save(data_dir: &Path, report: &Report, until: f64) -> Result<PathBuf> {
@@ -272,4 +318,20 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
         start,
         rows,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daily_report_once_at_eight_polish_time() {
+        let dir = std::env::temp_dir().join(format!("arbibot-daily-{}", std::process::id()));
+        let eight = 1_791_784_800_000.0;
+        let marker = daily_due(&dir, eight).expect("8:00 czasu polskiego");
+        fs::write(&marker, "").unwrap();
+        assert!(daily_due(&dir, eight + 60_000.0).is_none());
+        assert!(daily_due(&dir, eight - HOUR_MS).is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

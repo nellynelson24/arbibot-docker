@@ -6,12 +6,14 @@ Arbitraż spot OKX EEA ↔ Bybit EU w Dockerze. Rust.
 
 ```bash
 docker compose build
-docker compose up -d                       # skaner i bot na sucho
+docker compose up -d                       # skaner, warianty na sucho, raport
 docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
 ```
 
 Ustawienia bota na żywo są w `compose.yaml`: STRK/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
+
+Warianty na sucho (`dry` i `ab-*`) różnią się jednym ustawieniem: progiem, marżą makera, opóźnieniem, rebalansem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
 ## Klucze
 

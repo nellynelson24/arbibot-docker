@@ -27,7 +27,7 @@ Klucze przekazuj zaszyfrowane (np. `gpg --symmetric`), hasło osobno.
    chmod 700 ~/.arbibot/secrets && chmod 600 ~/.arbibot/secrets/*
    sudo chown -R 1000:1000 ~/.arbibot/secrets data
    ```
-4. Skaner i bot na sucho:
+4. Skaner, warianty na sucho i raport o 8:00:
    ```bash
    docker compose build && docker compose up -d
    ```
