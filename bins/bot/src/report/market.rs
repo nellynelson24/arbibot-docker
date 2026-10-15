@@ -9,6 +9,12 @@ use super::stats::pl_hour;
 use super::{MIN_CASES, Run, executed, num, text};
 use crate::selector::utc_date;
 
+const MIN_OFFER: f64 = 5.0;
+
+fn quote(pair: &str) -> &str {
+    pair.split_once('/').map_or(pair, |(_, q)| q)
+}
+
 pub(super) fn market_section(
     data_dir: &Path,
     run: Option<&Run>,
@@ -63,10 +69,13 @@ pub(super) fn market_section(
             if net < min_bps {
                 continue;
             }
-            let offer = v["best_size"]
+            let Some(offer) = v["best_size"]
                 .as_f64()
                 .or_else(|| v["first_size"].as_f64())
-                .unwrap_or(size);
+                .filter(|&o| o >= MIN_OFFER)
+            else {
+                continue;
+            };
             let e = per_pair.entry(text(&v, "pair").to_owned()).or_default();
             e.0 += 1;
             e.1 += net / 1e4 * size.min(offer);
@@ -108,6 +117,7 @@ pub(super) fn market_section(
     let _ = writeln!(full);
     if let Some((best, (n, profit))) = ranked.first()
         && **best != pair
+        && quote(best) == quote(&pair)
         && *n >= MIN_CASES
         && *profit > 2.0 * ours.1
     {

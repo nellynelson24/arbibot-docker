@@ -164,6 +164,9 @@ impl Signal {
         let size = known(buy.ask_qty)
             .zip(known(sell.bid_qty))
             .map(|(ask_qty, bid_qty)| (ask_qty * buy.ask).min(bid_qty * sell.bid));
+        if size.is_some_and(|s| s <= 0.0) {
+            return None;
+        }
         Some(Signal {
             net_bps: net * 1e4,
             gross_bps: gross * 1e4,
