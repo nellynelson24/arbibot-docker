@@ -1,7 +1,13 @@
 name: arbibot
 
+x-arbibot-labels: &arbibot-labels
+  dev.dozzle.group: arbibot
+  logs.access: arbibot
+
 x-service: &service
   image: ghcr.io/nellynelson24/arbibot-docker:${ARBIBOT_VERSION:-latest}
+  labels:
+    <<: *arbibot-labels
   init: true
   restart: unless-stopped
   read_only: true
