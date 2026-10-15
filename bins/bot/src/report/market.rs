@@ -19,9 +19,9 @@ pub(super) fn market_section(
     data_dir: &Path,
     run: Option<&Run>,
     runs: &[Run],
-    since: f64,
-    until: f64,
+    (since, until): (f64, f64),
     full: &mut String,
+    short: &mut String,
     advice: &mut Vec<String>,
 ) {
     let Some(run) = run else {
@@ -115,6 +115,22 @@ pub(super) fn market_section(
         let _ = writeln!(full, "| {p} | {n} | {profit:+.3} |");
     }
     let _ = writeln!(full);
+    let same_quote: Vec<String> = ranked
+        .iter()
+        .filter(|(p, _)| quote(p) == quote(&pair))
+        .take(3)
+        .map(|(p, (n, _))| format!("{p} {n}"))
+        .collect();
+    let _ = writeln!(
+        short,
+        "\nSkaner (≥ {min_bps} bp): {pair} {} okazji; najwięcej: {}",
+        ours.0,
+        if same_quote.is_empty() {
+            "brak".to_owned()
+        } else {
+            same_quote.join(", ")
+        }
+    );
     if let Some((best, (n, profit))) = ranked.first()
         && **best != pair
         && quote(best) == quote(&pair)

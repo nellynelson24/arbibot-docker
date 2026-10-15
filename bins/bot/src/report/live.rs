@@ -56,12 +56,19 @@ pub(super) fn live_section(
             text(h, "reason")
         );
     }
+    let hedges = run.of("maker_hedge");
+    let maker = run.sum("maker_hedge", "pnl");
     let _ = writeln!(
         short,
-        "\nNa żywo: {pnl:+.4} USDC, sygnały {}, wykonane {}, śr. {mean_bps:+.0} bp",
+        "\nNa żywo: razem {:+.4} USDC\n• taker: {pnl:+.4} z {} wykonanych na {} sygnałów, śr. {mean_bps:+.0} bp\n• maker: {maker:+.4} z {} zabezpieczeń",
+        pnl + maker,
+        done.len(),
         trades.len(),
-        done.len()
+        hedges.len()
     );
+    if let Some(last) = statuses.last() {
+        let _ = writeln!(short, "Kapitał: {:.2} USDC", num(last, "equity"));
+    }
     if !halts.is_empty() {
         let _ = writeln!(short, "Zatrzymania: {}", halts.len());
     }
@@ -233,7 +240,7 @@ pub(super) fn live_section(
     let empty = trades.len() - done.len();
     if trades.len() >= 5 && empty * 100 >= trades.len() * 40 {
         advice.push(format!(
-            "Na żywo {empty} z {} sygnałów bez wypełnienia: porównaj warianty ab-slack10 i ab-35 — zapas ceny może je zamienić w transakcje.",
+            "Na żywo {empty} z {} sygnałów bez wypełnienia: zapas ceny (--slack-bps) mógłby część z nich zamienić w transakcje.",
             trades.len()
         ));
     }

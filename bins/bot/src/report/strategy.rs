@@ -44,13 +44,13 @@ pub(super) fn maker_section(runs: &[Run], full: &mut String, advice: &mut Vec<St
         if hedges.len() >= 30 {
             if mean_bps > 0.0 && positive * 10 >= hedges.len() * 6 {
                 advice.push(format!(
-                    "Maker ({}) na plus: {} zabezpieczeń, średnio {mean_bps:+.1} bp, {positive} na plus. Jeśli utrzyma się kilka dni, warto go wdrożyć na żywo.",
+                    "Maker ({}) na plus: {} zabezpieczeń, średnio {mean_bps:+.1} bp, {positive} na plus.",
                     run.label,
                     hedges.len()
                 ));
             } else if mean_bps < 0.0 {
                 advice.push(format!(
-                    "Maker ({}) na minus: średnio {mean_bps:+.1} bp z {} zabezpieczeń — niekorzystne wypełnienia zjadają marżę; nie wdrażać.",
+                    "Maker ({}) na minus: średnio {mean_bps:+.1} bp z {} zabezpieczeń — niekorzystne wypełnienia zjadają marżę; rozważ wyższą marżę makera.",
                     run.label,
                     hedges.len()
                 ));

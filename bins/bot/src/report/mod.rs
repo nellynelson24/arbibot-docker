@@ -236,9 +236,9 @@ pub fn build(data_dir: &Path, since: f64, until: f64) -> Result<Report> {
         data_dir,
         live.or(runs.first()),
         &runs,
-        since,
-        until,
+        (since, until),
         &mut full,
+        &mut short,
         &mut advice,
     );
 
