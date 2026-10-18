@@ -93,6 +93,30 @@ services:
       bot dry-run --pair W/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-w
 
+  ab-tia:
+    <<: *dry
+    command: >-
+      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-tia
+
+  ab-s:
+    <<: *dry
+    command: >-
+      bot dry-run --pair S/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-s
+
+  ab-arb:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-arb
+
+  ab-sui:
+    <<: *dry
+    command: >-
+      bot dry-run --pair SUI/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --data-dir data/ab-sui
+
   live:
     <<: *service
     profiles: [live]
