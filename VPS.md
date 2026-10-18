@@ -39,11 +39,11 @@ Salda wyrównuje handel. Automatyczne przelewy włącza `ARBIBOT_LIVE_FLAGS=--au
 
    | Zmienna | Wartość |
    |---|---|
-   | `ARBIBOT_VERSION` | np. `1.2.0` |
+   | `ARBIBOT_VERSION` | np. `1.5.0` |
    | `ARBIBOT_DATA` | `/opt/arbibot/data` |
    | `ARBIBOT_SECRETS` | `/opt/arbibot/secrets` |
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |
-   | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze, potem puste |
+   | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze (kupuje brakującą monetę pary, innych nie sprzedaje), potem puste |
 
    Bez Portainera: te same zmienne w pliku `.env` obok `compose.yaml`, potem `docker compose pull && docker compose up -d`.
 3. Aktualizacja: nowa wartość `ARBIBOT_VERSION` i redeploy z pobraniem obrazu.

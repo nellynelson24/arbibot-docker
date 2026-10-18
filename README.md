@@ -13,6 +13,8 @@ docker compose logs -f live
 
 Ustawienia bota na żywo są w `compose.yaml`: TIA/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
 
+Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje monetę pary za USDC na giełdzie, gdzie stanowi mniej niż połowę wartości, jeśli brakuje co najmniej ćwierci transakcji (10 USDC). Inne monety na kontach (np. STRK) zostają nietknięte. Każdy zakup i salda obu giełd przy starcie idą na Telegram. Transakcja zmniejsza się do dostępnych środków, najmniej do ćwierci `--size`.
+
 ## Schemat transakcji
 
 - `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
@@ -34,7 +36,7 @@ Warianty na sucho (`dry` i `ab-*`) różnią się od głównego jednym ustawieni
 GitHub Actions buduje `ghcr.io/nellynelson24/arbibot-docker` z każdego tagu `vX.Y.Z` (obraz `X.Y.Z`, `X.Y`, `latest`) i z gałęzi `main` (obraz `main`). Nowa wersja:
 
 ```bash
-git tag v1.2.1 && git push origin v1.2.1
+git tag v1.5.0 && git push origin v1.5.0
 ```
 
 Zmienne `compose.yaml`: `ARBIBOT_VERSION` (domyślnie `latest`), `ARBIBOT_DATA` (`./data`), `ARBIBOT_SECRETS` (`~/.arbibot/secrets`). Budowa lokalna: `docker build -t ghcr.io/nellynelson24/arbibot-docker:latest .`

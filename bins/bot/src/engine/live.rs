@@ -7,7 +7,7 @@ use tokio::time::interval;
 use venues::Venue;
 
 use super::orders::floor_to;
-use super::{Accounts, Engine, INVENTORY_SLIPPAGE, LiveArgs, VENUES, http, run};
+use super::{Accounts, Engine, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, http, run};
 use crate::inventory::Wallet;
 use crate::paper::Side;
 
@@ -71,6 +71,29 @@ fn keep_warm(http: reqwest::Client) {
 }
 
 impl Engine {
+    fn purchases(&self, mid: f64) -> Vec<(usize, f64, f64)> {
+        let mut purchases = Vec::new();
+        for v in 0..2 {
+            let w = self.inventory.wallets[v];
+            let spend = (w.quote + w.base * mid) / 2.0 - w.base * mid;
+            let Some(ask) = self.books[v].borrow().asks.first().map(|l| l.0) else {
+                continue;
+            };
+            let m = &self.market;
+            if let Some(qty) = purchase_qty(
+                spend,
+                ask,
+                self.min_trade(),
+                m.step,
+                m.min_qty,
+                m.min_notional,
+            ) {
+                purchases.push((v, qty, ask * (1.0 + INVENTORY_SLIPPAGE)));
+            }
+        }
+        purchases
+    }
+
     pub(super) async fn resync(&mut self) -> Result<()> {
         if let Err(e) = self.sync_balances().await
             && self.halted.is_none()
@@ -138,21 +161,7 @@ impl Engine {
             }
         }
 
-        let mut purchases = Vec::new();
-        for v in 0..2 {
-            let w = self.inventory.wallets[v];
-            let spend = (w.quote + w.base * mid) / 2.0 - w.base * mid;
-            let Some(ask) = self.books[v].borrow().asks.first().map(|l| l.0) else {
-                continue;
-            };
-            let m = &self.market;
-
-            let qty = floor_to(spend * 0.98 / ask, m.step);
-            if spend < self.size || qty < m.min_qty || qty * ask < m.min_notional {
-                continue;
-            }
-            purchases.push((v, qty, ask * (1.0 + INVENTORY_SLIPPAGE)));
-        }
+        let purchases = self.purchases(mid);
         if !purchases.is_empty() {
             println!("\nBrakuje {base} do sprzedaży:");
             for &(v, qty, limit) in &purchases {
@@ -168,15 +177,12 @@ impl Engine {
                 );
             }
         }
-        let funded = (0..2).any(|d| {
-            let w = &self.inventory.wallets;
-            w[d].quote >= self.size * 1.01 && w[1 - d].base * mid >= self.size
-        });
+        let funded = funded(&self.inventory.wallets, mid, self.min_trade());
         if !funded && !(buy_inventory && !purchases.is_empty()) {
             println!(
-                "\nUwaga: żaden kierunek nie ma środków na transakcję {} {quote} \
+                "\nUwaga: żaden kierunek nie ma środków na transakcję od {:.2} {quote} \
                  ({quote} na jednej giełdzie i {base} na drugiej).",
-                self.size
+                self.min_trade()
             );
         }
 
@@ -200,12 +206,15 @@ impl Engine {
         if buy_inventory {
             for (v, qty, limit) in purchases {
                 let fill = self.ioc(v, Side::Buy, qty, limit).await?;
-                println!(
-                    "  {}: kupiono {} {base} po średnio {:.6}",
+                let line = format!(
+                    "{}: kupiono {} {base} po średnio {:.6} (≈{:.2} {quote})",
                     VENUES[v].name(),
                     fill.qty,
-                    fill.avg_price
+                    fill.avg_price,
+                    fill.qty * fill.avg_price
                 );
+                println!("  {line}");
+                self.tell(line);
                 self.ledger.write(json!({
                     "type": "inventory_buy",
                     "venue": VENUES[v].id(),
@@ -217,5 +226,63 @@ impl Engine {
             self.sync_balances().await?;
         }
         Ok(())
+    }
+}
+
+fn purchase_qty(
+    spend: f64,
+    ask: f64,
+    min_trade: f64,
+    step: f64,
+    min_qty: f64,
+    min_notional: f64,
+) -> Option<f64> {
+    let qty = floor_to(spend * 0.98 / ask, step);
+    (spend >= min_trade && qty >= min_qty && qty * ask >= min_notional).then_some(qty)
+}
+
+fn funded(wallets: &[Wallet; 2], mid: f64, min_trade: f64) -> bool {
+    (0..2).any(|d| {
+        wallets[d].quote >= min_trade * (1.0 + SIZE_MARGIN)
+            && wallets[1 - d].base * mid >= min_trade
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buys_from_a_quarter_of_the_trade_size() {
+        let qty = purchase_qty(67.0, 1.5, 10.0, 0.01, 0.1, 1.0);
+        assert_eq!(qty, Some(43.77));
+        assert_eq!(purchase_qty(7.8, 1.5, 10.0, 0.01, 0.1, 1.0), None);
+        assert_eq!(purchase_qty(12.0, 1.5, 10.0, 0.01, 0.1, 20.0), None);
+    }
+
+    #[test]
+    fn small_balance_on_one_venue_still_funds_one_direction() {
+        let wallets = [
+            Wallet {
+                base: 0.0,
+                quote: 15.63,
+            },
+            Wallet {
+                base: 45.0,
+                quote: 69.0,
+            },
+        ];
+        assert!(funded(&wallets, 1.5, 10.0));
+        let empty = [
+            Wallet {
+                base: 0.0,
+                quote: 9.0,
+            },
+            Wallet {
+                base: 0.0,
+                quote: 69.0,
+            },
+        ];
+        assert!(!funded(&empty, 1.5, 10.0));
     }
 }

@@ -323,6 +323,16 @@ impl Engine {
             args.daily_loss_limit,
             q = self.market.quote
         );
+        for (venue, w) in VENUES.iter().zip(self.inventory.wallets) {
+            started += &format!(
+                " {}: {:.4} {} i {:.2} {}.",
+                venue.name(),
+                w.base,
+                self.market.base,
+                w.quote,
+                self.market.quote
+            );
+        }
         if self.day_trades > 0 {
             started += &format!(
                 " Dziś wcześniej: transakcje {}, wynik {:+.4} {}.",
