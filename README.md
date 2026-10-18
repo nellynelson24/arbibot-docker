@@ -22,6 +22,11 @@ Ustawienia bota na żywo są w `compose.yaml`: TIA/USDC, transakcja do 40 USDC, 
 
 Warianty na sucho (`dry` i `ab-*`) różnią się od głównego jednym ustawieniem: kolejnością nóg, rebalansem, progiem, marżą makera, opóźnieniem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
+## Dane rynkowe
+
+- Świeżość: ping co 2 s na obu giełdach; dane są świeże, gdy pong doszedł najpóźniej 3 s temu, a książka jest zgodna. Bez świeżości obu giełd nie ma sygnałów takera, a zlecenia maker są wycofywane.
+- Zgodność książek: delty Bybit muszą mieć kolejne numery `u` (snapshot albo `u = 1` resetuje książkę, duplikat jest pomijany). Luka albo skrzyżowana książka (kupno ≥ sprzedaż) oznacza książkę jako niezgodną i wymusza nową subskrypcję. Licznik luk jest w statusie i w raporcie dziennym.
+
 ## Obraz i wersje
 
 GitHub Actions buduje `ghcr.io/nellynelson24/arbibot-docker` z każdego tagu `vX.Y.Z` (obraz `X.Y.Z`, `X.Y`, `latest`) i z gałęzi `main` (obraz `main`). Nowa wersja:

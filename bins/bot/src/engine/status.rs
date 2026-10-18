@@ -158,6 +158,10 @@ impl Engine {
                 s.maker_fills, s.maker_hedges, s.hedge_misses, s.maker_pnl
             );
         }
+        let gaps = [0, 1].map(|v| self.books[v].borrow().gaps);
+        if gaps.iter().any(|&g| g > 0) {
+            extra += &format!(" | luki książek OKX {} / Bybit {}", gaps[0], gaps[1]);
+        }
         if let Some(reason) = &self.halted {
             extra += &format!(" | ZATRZYMANY: {reason}");
         }
@@ -206,6 +210,7 @@ impl Engine {
             "maker_pnl": s.maker_pnl,
             "hedge_misses": s.hedge_misses,
             "halted": self.halted,
+            "book_gaps": gaps,
         }))
     }
 

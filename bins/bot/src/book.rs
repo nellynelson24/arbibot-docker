@@ -9,7 +9,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use venues::Venue;
 
 const SILENCE: Duration = Duration::from_secs(30);
-const KEEPALIVE: Duration = Duration::from_secs(15);
+const PING_EVERY: Duration = Duration::from_secs(2);
+const FRESH: Duration = Duration::from_secs(3);
+const ASLEEP_MS: u128 = 5_000;
 const RECONNECT: Duration = Duration::from_secs(2);
 const QUIET_AFTER: Duration = Duration::from_secs(10);
 const BYBIT_DEPTH: usize = 50;
@@ -21,6 +23,10 @@ pub struct Book {
     pub updated: Option<Instant>,
     pub bid_moved: Option<Instant>,
     pub ask_moved: Option<Instant>,
+    pub synced: bool,
+    pub pong: Option<Instant>,
+    pub gaps: u64,
+    pub seq: Option<u64>,
 }
 
 impl Book {
@@ -46,6 +52,24 @@ impl Book {
 
     pub fn age(&self) -> Option<Duration> {
         self.updated.map(|t| t.elapsed())
+    }
+
+    pub fn fresh_at(&self, now: Instant) -> bool {
+        self.synced
+            && self
+                .pong
+                .is_some_and(|t| now.saturating_duration_since(t) <= FRESH)
+    }
+
+    fn crossed(&self) -> bool {
+        matches!((self.bids.first(), self.asks.first()), (Some(b), Some(a)) if b.0 >= a.0)
+    }
+
+    fn check_crossed(&mut self) {
+        if self.synced && self.crossed() {
+            self.synced = false;
+            self.gaps += 1;
+        }
     }
 }
 
@@ -121,7 +145,11 @@ fn start(
             if tx.is_closed() {
                 return;
             }
-            tx.send_replace(Book::default());
+            let gaps = tx.borrow().gaps;
+            tx.send_replace(Book {
+                gaps,
+                ..Book::default()
+            });
             sleep(RECONNECT).await;
         }
     });
@@ -161,29 +189,48 @@ async fn session(
     let (mut ws, _) = connect_async(url).await?;
     ws.send(Message::Text(subscribe.to_string().into())).await?;
 
-    let mut book = Book::default();
+    ws.send(Message::Text(ping.clone().into())).await?;
+
+    let mut book = Book {
+        gaps: tx.borrow().gaps,
+        ..Book::default()
+    };
     let mut okx_top = OkxTop::default();
     let mut last_trade_id = 0u64;
     let mut last_keepalive_ms = wall_ms();
-    let mut keepalive = interval(KEEPALIVE);
+    let mut last_message = Instant::now();
+    let mut keepalive = interval(PING_EVERY);
     keepalive.tick().await;
     loop {
         tokio::select! {
             _ = keepalive.tick() => {
                 let now = wall_ms();
-                if now - last_keepalive_ms > 2 * KEEPALIVE.as_millis() {
+                if now - last_keepalive_ms > ASLEEP_MS {
                     bail!("przerwa w pracy komputera");
                 }
                 last_keepalive_ms = now;
-                if book.age().is_none_or(|age| age > SILENCE) {
-                    bail!("brak danych książki przez {} s", SILENCE.as_secs());
+                if last_message.elapsed() > SILENCE {
+                    bail!("cisza przez {} s", SILENCE.as_secs());
                 }
                 ws.send(Message::Text(ping.clone().into())).await?;
             }
             msg = timeout(SILENCE, ws.next()) => {
                 let msg = msg.context("brak wiadomości")?.context("połączenie zamknięte")??;
+                last_message = Instant::now();
                 let Message::Text(text) = msg else { continue };
-                let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                let v = serde_json::from_str::<Value>(text.as_str()).unwrap_or(Value::Null);
+                if is_pong(text.as_str(), &v) {
+                    let now = Instant::now();
+                    book.pong = Some(now);
+                    tx.send_if_modified(|b| {
+                        b.pong = Some(now);
+                        false
+                    });
+                    continue;
+                }
+                if v.is_null() {
+                    continue;
+                }
                 if v["arg"]["channel"] == "trades" {
                     for t in v["data"].as_array().into_iter().flatten() {
                         let id = t["tradeId"].as_str().and_then(|id| id.parse::<u64>().ok());
@@ -200,10 +247,16 @@ async fn session(
                     continue;
                 }
                 let top = (best(&book.bids), best(&book.asks));
+                let gaps = book.gaps;
                 let changed = match venue {
                     Venue::Okx => apply_okx(&mut book, &mut okx_top, &v)?,
                     _ => apply_bybit(&mut book, &v)?,
                 };
+                book.check_crossed();
+                if book.gaps > gaps {
+                    tx.send_replace(book.clone());
+                    bail!("książka niezgodna (luka albo skrzyżowanie) — nowa subskrypcja");
+                }
                 if changed {
                     let now = Instant::now();
                     book.updated = Some(now);
@@ -220,6 +273,10 @@ async fn session(
             }
         }
     }
+}
+
+fn is_pong(text: &str, v: &Value) -> bool {
+    text == "pong" || v["ret_msg"] == "pong" || v["op"] == "pong"
 }
 
 fn best(levels: &[(f64, f64)]) -> Option<f64> {
@@ -271,6 +328,7 @@ fn apply_okx(book: &mut Book, top: &mut OkxTop, v: &Value) -> Result<bool> {
         book.asks.retain(|&(price, _)| price > best.0);
         book.asks.insert(0, best);
     }
+    book.synced = !book.bids.is_empty() && !book.asks.is_empty();
     Ok(true)
 }
 
@@ -285,24 +343,37 @@ fn apply_bybit(book: &mut Book, v: &Value) -> Result<bool> {
         return Ok(false);
     }
     let data = &v["data"];
-    match v["type"].as_str() {
-        Some("snapshot") => {
-            book.bids = levels(&data["b"]);
-            book.asks = levels(&data["a"]);
-        }
-        Some("delta") if book.updated.is_some() => {
-            merge(&mut book.bids, &levels_with_zeros(&data["b"]), |a, b| {
-                b.total_cmp(a)
-            });
-            merge(
-                &mut book.asks,
-                &levels_with_zeros(&data["a"]),
-                f64::total_cmp,
-            );
-        }
-
-        _ => return Ok(false),
+    let u = data["u"].as_u64();
+    if v["type"] == "snapshot" || u == Some(1) {
+        book.bids = levels(&data["b"]);
+        book.asks = levels(&data["a"]);
+        book.seq = u;
+        book.synced = true;
+        return Ok(true);
     }
+    if v["type"] != "delta" || !book.synced {
+        return Ok(false);
+    }
+    let (Some(u), Some(last)) = (u, book.seq) else {
+        return Ok(false);
+    };
+    if u <= last {
+        return Ok(false);
+    }
+    if u != last + 1 {
+        book.synced = false;
+        book.gaps += 1;
+        return Ok(true);
+    }
+    merge(&mut book.bids, &levels_with_zeros(&data["b"]), |a, b| {
+        b.total_cmp(a)
+    });
+    merge(
+        &mut book.asks,
+        &levels_with_zeros(&data["a"]),
+        f64::total_cmp,
+    );
+    book.seq = Some(u);
     Ok(true)
 }
 
@@ -398,6 +469,89 @@ mod tests {
         assert_eq!(book.bids[0], (0.98, 1.0));
 
         assert!(!apply_okx(&mut book, &mut top, &msg("bbo-tbt", 180, "0.5", "2")).unwrap());
+    }
+
+    fn bybit(kind: &str, u: u64, bid: &str, ask: &str) -> Value {
+        json!({"topic": "orderbook.50.TIAUSDC", "type": kind, "data": {
+            "s": "TIAUSDC", "b": [[bid, "1"]], "a": [[ask, "1"]], "u": u, "seq": u + 100,
+        }})
+    }
+
+    #[test]
+    fn bybit_delta_before_snapshot_is_ignored() {
+        let mut book = Book::default();
+        assert!(!apply_bybit(&mut book, &bybit("delta", 5, "1.0", "1.1")).unwrap());
+        assert!(!book.synced && book.bids.is_empty());
+    }
+
+    #[test]
+    fn bybit_contiguous_deltas_update_levels() {
+        let mut book = Book::default();
+        apply_bybit(&mut book, &bybit("snapshot", 10, "1.0", "1.1")).unwrap();
+        assert!(apply_bybit(&mut book, &bybit("delta", 11, "1.05", "1.1")).unwrap());
+        assert_eq!(book.bids[0].0, 1.05);
+        assert!(book.synced);
+        assert_eq!(book.gaps, 0);
+    }
+
+    #[test]
+    fn bybit_gap_marks_unsynced_until_a_new_snapshot() {
+        let mut book = Book::default();
+        apply_bybit(&mut book, &bybit("snapshot", 10, "1.0", "1.1")).unwrap();
+        apply_bybit(&mut book, &bybit("delta", 13, "1.0", "1.1")).unwrap();
+        assert!(!book.synced);
+        assert_eq!(book.gaps, 1);
+        assert!(!apply_bybit(&mut book, &bybit("delta", 14, "1.0", "1.1")).unwrap());
+        apply_bybit(&mut book, &bybit("snapshot", 20, "1.0", "1.1")).unwrap();
+        assert!(book.synced);
+        assert_eq!(book.gaps, 1);
+    }
+
+    #[test]
+    fn bybit_duplicate_is_skipped_and_u1_resets() {
+        let mut book = Book::default();
+        apply_bybit(&mut book, &bybit("snapshot", 10, "1.0", "1.1")).unwrap();
+        apply_bybit(&mut book, &bybit("delta", 11, "1.02", "1.1")).unwrap();
+        assert!(!apply_bybit(&mut book, &bybit("delta", 11, "1.03", "1.1")).unwrap());
+        assert_eq!(book.bids[0].0, 1.02);
+        apply_bybit(&mut book, &bybit("delta", 1, "2.0", "2.1")).unwrap();
+        assert_eq!(book.bids, vec![(2.0, 1.0)]);
+        assert!(book.synced && book.gaps == 0);
+    }
+
+    #[test]
+    fn crossed_book_is_unsynced() {
+        let mut book = Book::default();
+        apply_bybit(&mut book, &bybit("snapshot", 10, "1.0", "1.1")).unwrap();
+        apply_bybit(&mut book, &bybit("delta", 11, "1.2", "1.1")).unwrap();
+        book.check_crossed();
+        assert!(!book.synced);
+        assert_eq!(book.gaps, 1);
+    }
+
+    #[test]
+    fn freshness_needs_a_recent_pong_and_a_synced_book() {
+        let now = Instant::now();
+        let mut book = Book {
+            synced: true,
+            ..Book::default()
+        };
+        assert!(!book.fresh_at(now));
+        book.pong = Some(now);
+        assert!(book.fresh_at(now));
+        assert!(!book.fresh_at(now + Duration::from_secs(4)));
+        book.pong = Some(now + Duration::from_secs(4));
+        assert!(book.fresh_at(now + Duration::from_secs(4)));
+        book.synced = false;
+        assert!(!book.fresh_at(now + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn pongs_are_recognised_on_both_venues() {
+        assert!(is_pong("pong", &Value::Null));
+        let bybit = json!({"success": true, "ret_msg": "pong", "op": "ping"});
+        assert!(is_pong("", &bybit));
+        assert!(!is_pong("", &json!({"topic": "orderbook.50.X"})));
     }
 
     #[test]

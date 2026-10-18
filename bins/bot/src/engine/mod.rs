@@ -39,7 +39,6 @@ pub use transfer::{TransferArgs, transfer};
 const VENUES: [Venue; 2] = [Venue::Okx, Venue::Bybit];
 const OKX: usize = 0;
 const BYBIT: usize = 1;
-const MAX_BOOK_AGE: Duration = Duration::from_secs(30);
 const STATUS_EVERY: Duration = Duration::from_secs(60);
 const STOP_FILE: &str = "STOP";
 const MAX_ROUTE_COST: f64 = 0.01;

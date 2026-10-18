@@ -2,7 +2,10 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::orders::floor_to;
-use super::{BYBIT, Engine, MAX_BOOK_AGE, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
+use std::time::Instant;
+
+use super::{BYBIT, Engine, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
+use crate::book::Book;
 use crate::ledger::now_ms;
 use crate::paper::{Fill, Side};
 
@@ -43,10 +46,7 @@ impl Engine {
     pub(super) fn plan_sized(&self, d: usize, size: f64) -> Option<Plan> {
         let buy_book = self.books[d].borrow();
         let sell_book = self.books[1 - d].borrow();
-        if [&buy_book, &sell_book]
-            .iter()
-            .any(|b| b.age().is_none_or(|age| age > MAX_BOOK_AGE))
-        {
+        if !books_fresh([&buy_book, &sell_book], Instant::now()) {
             return None;
         }
         let m = &self.market;
@@ -316,6 +316,10 @@ impl Engine {
     }
 }
 
+pub(super) fn books_fresh(books: [&Book; 2], now: Instant) -> bool {
+    books.iter().all(|b| b.fresh_at(now))
+}
+
 fn restoring(room: [f64; 2]) -> [bool; 2] {
     [0, 1].map(|d| room[1 - d] < room[d] / 2.0)
 }
@@ -340,6 +344,26 @@ mod tests {
         let cap = break_even_buy(1.0, fee_buy, fee_sell);
         assert!((1.0 * (1.0 - fee_sell) - cap * (1.0 + fee_buy)).abs() < 1e-12);
         assert!(floor > 1.0 && cap < 1.0);
+    }
+
+    #[test]
+    fn stale_books_block_signals_until_a_pong() {
+        let now = Instant::now();
+        let synced = Book {
+            synced: true,
+            ..Book::default()
+        };
+        let mut okx = synced.clone();
+        let mut bybit = synced.clone();
+        assert!(!books_fresh([&okx, &bybit], now));
+        okx.pong = Some(now);
+        assert!(!books_fresh([&okx, &bybit], now));
+        bybit.pong = Some(now);
+        assert!(books_fresh([&okx, &bybit], now));
+        assert!(!books_fresh(
+            [&okx, &bybit],
+            now + std::time::Duration::from_secs(5)
+        ));
     }
 
     #[test]

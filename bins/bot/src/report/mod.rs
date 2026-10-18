@@ -181,6 +181,25 @@ impl Run {
     }
 }
 
+fn book_gaps(statuses: &[&Value]) -> u64 {
+    let counts =
+        |s: &Value| -> [u64; 2] { [0, 1].map(|v| s["book_gaps"][v].as_u64().unwrap_or(0)) };
+    let mut total = 0;
+    let mut last = statuses.first().map_or([0, 0], |s| counts(s));
+    for s in statuses.iter().skip(1) {
+        let now = counts(s);
+        for v in 0..2 {
+            total += if now[v] >= last[v] {
+                now[v] - last[v]
+            } else {
+                now[v]
+            };
+        }
+        last = now;
+    }
+    total
+}
+
 fn num(v: &Value, key: &str) -> f64 {
     v[key].as_f64().unwrap_or(0.0)
 }
@@ -232,6 +251,17 @@ pub fn build(data_dir: &Path, since: f64, until: f64) -> Result<Report> {
     }
     maker_section(&runs, &mut full, &mut advice);
     calibration_section(&runs, &mut full, &mut advice);
+    if let Some(run) = live.or(runs.first()) {
+        let gaps = book_gaps(&run.of("status"));
+        let _ = writeln!(
+            full,
+            "## Książki zleceń\n\n- Luki i skrzyżowania ({}): {gaps}\n",
+            run.label
+        );
+        if gaps > 0 {
+            let _ = writeln!(short, "\nLuki w książkach ({}): {gaps}", run.label);
+        }
+    }
     market_section(
         data_dir,
         live.or(runs.first()),
@@ -323,6 +353,19 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn book_gaps_count_increments_across_restarts() {
+        let statuses = [
+            serde_json::json!({"book_gaps": [2, 1]}),
+            serde_json::json!({"book_gaps": [3, 1]}),
+            serde_json::json!({"book_gaps": [0, 2]}),
+            serde_json::json!({"book_gaps": [1, 2]}),
+        ];
+        let refs: Vec<&Value> = statuses.iter().collect();
+        assert_eq!(book_gaps(&refs), 3);
+        assert_eq!(book_gaps(&[]), 0);
+    }
 
     #[test]
     fn daily_report_once_at_eight_polish_time() {

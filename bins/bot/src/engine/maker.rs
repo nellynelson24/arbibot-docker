@@ -5,13 +5,13 @@ use serde_json::{Value, json};
 
 use super::maker_live::LiveMaker;
 use super::orders::{floor_to, side_id};
-use super::{BYBIT, Engine, MAX_BOOK_AGE, OKX, clock};
+use super::taker::books_fresh;
+use super::{BYBIT, Engine, OKX, clock};
 use crate::book::{Book, Trade};
 use crate::ledger::now_ms;
 use crate::paper::Side;
 
 const HEDGE_SLIPPAGE: f64 = 0.005;
-const MAX_HEDGE_AGE: Duration = Duration::from_secs(5);
 
 pub(super) struct Resting {
     pub(super) price: f64,
@@ -79,9 +79,7 @@ impl Engine {
         {
             let okx = self.books[OKX].borrow();
             let bybit = self.books[BYBIT].borrow();
-            let fresh = connected
-                && okx.age().is_some_and(|a| a <= MAX_BOOK_AGE)
-                && bybit.age().is_some_and(|a| a <= MAX_HEDGE_AGE);
+            let fresh = connected && books_fresh([&okx, &bybit], Instant::now());
             for side in [Side::Buy, Side::Sell] {
                 let i = index(side);
                 let best = match side {
