@@ -11,9 +11,15 @@ docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
 ```
 
-Ustawienia bota na żywo są w `compose.yaml`: STRK/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
+Ustawienia bota na żywo są w `compose.yaml`: TIA/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
 
-Warianty na sucho (`dry` i `ab-*`) różnią się jednym ustawieniem: progiem, marżą makera, opóźnieniem, rebalansem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
+## Schemat transakcji
+
+- `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
+- Salda wyrównują się same: kierunek, który je wyrównuje, ma niższy próg (`--restore-min-bps`, 30 bp), gdy przeciwny ma mniej niż połowę jego środków.
+- `--trade-rebalance`: gdy kierunek jest zablokowany od 15 min, transakcja odwrotna kosztem do 45 bp, najwyżej raz na 10 min.
+
+Warianty na sucho (`dry` i `ab-*`) różnią się od głównego jednym ustawieniem: kolejnością nóg, rebalansem, progiem, marżą makera, opóźnieniem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
 ## Obraz i wersje
 

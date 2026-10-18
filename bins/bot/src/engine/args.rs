@@ -18,8 +18,18 @@ pub struct Args {
     #[arg(help = "Zapas ceny na nogę (bp), najwyżej ćwierć oczekiwanego zysku")]
     pub(super) slack_bps: f64,
     #[arg(long)]
-    #[arg(help = "Na sucho: rebalans przez sprzedaż i kupno zamiast przelewów")]
+    #[arg(
+        help = "Nogi po kolei: najpierw giełda, której cena dłużej stoi, druga po jej wypełnieniu z limitem bez straty"
+    )]
+    pub(super) sequential: bool,
+    #[arg(long)]
+    #[arg(help = "Rebalans handlem, gdy kierunek jest zablokowany od 15 min (zamiast przelewów)")]
     pub(super) trade_rebalance: bool,
+    #[arg(long, default_value_t = 30.0, allow_negative_numbers = true)]
+    #[arg(
+        help = "Próg dla kierunku, który wyrównuje salda, gdy przeciwny ma mniej niż połowę jego środków (bp)"
+    )]
+    pub(super) restore_min_bps: f64,
     #[arg(long, default_value_t = 45.0)]
     #[arg(help = "Najwyższy koszt rebalansu handlem (bp)")]
     pub(super) rebalance_max_cost_bps: f64,

@@ -89,3 +89,48 @@ pub(crate) fn num(v: &serde_json::Value) -> Option<f64> {
     };
     x.is_finite().then_some(x)
 }
+
+const RETRIES: u32 = 5;
+const RATE_LIMITED: [&str; 4] = ["50011", "50061", "10006", "10018"];
+
+pub(crate) async fn retry_rate_limited<F, Fut>(mut call: F) -> anyhow::Result<serde_json::Value>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<serde_json::Value>>,
+{
+    let mut pause = std::time::Duration::from_millis(300);
+    for _ in 1..RETRIES {
+        match call().await {
+            Err(e) if rate_limited(&e) => {
+                let jitter = std::time::Duration::from_millis(sign::now_ms() % 200);
+                tokio::time::sleep(pause + jitter).await;
+                pause *= 2;
+            }
+            other => return other,
+        }
+    }
+    call().await
+}
+
+fn rate_limited(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    RATE_LIMITED.iter().any(|code| text.contains(code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_errors_are_recognised() {
+        assert!(rate_limited(&anyhow::anyhow!(
+            "OKX /x: kod \"50011\" \"Too many requests\""
+        )));
+        assert!(rate_limited(&anyhow::anyhow!(
+            "Bybit /y: kod 10006 \"Too many visits\""
+        )));
+        assert!(!rate_limited(&anyhow::anyhow!(
+            "OKX /x: kod \"51603\" \"Order does not exist\""
+        )));
+    }
+}

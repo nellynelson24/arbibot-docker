@@ -19,6 +19,8 @@ pub struct Book {
     pub bids: Vec<(f64, f64)>,
     pub asks: Vec<(f64, f64)>,
     pub updated: Option<Instant>,
+    pub bid_moved: Option<Instant>,
+    pub ask_moved: Option<Instant>,
 }
 
 impl Book {
@@ -197,12 +199,20 @@ async fn session(
                     }
                     continue;
                 }
+                let top = (best(&book.bids), best(&book.asks));
                 let changed = match venue {
                     Venue::Okx => apply_okx(&mut book, &mut okx_top, &v)?,
                     _ => apply_bybit(&mut book, &v)?,
                 };
                 if changed {
-                    book.updated = Some(Instant::now());
+                    let now = Instant::now();
+                    book.updated = Some(now);
+                    if best(&book.bids) != top.0 {
+                        book.bid_moved = Some(now);
+                    }
+                    if best(&book.asks) != top.1 {
+                        book.ask_moved = Some(now);
+                    }
                     if tx.send(book.clone()).is_err() {
                         return Ok(());
                     }
@@ -210,6 +220,10 @@ async fn session(
             }
         }
     }
+}
+
+fn best(levels: &[(f64, f64)]) -> Option<f64> {
+    levels.first().map(|l| l.0)
 }
 
 #[derive(Default)]

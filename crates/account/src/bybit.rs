@@ -2,7 +2,10 @@ use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use serde_json::{Value, json};
 
-use crate::{Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num, sign};
+use crate::{
+    Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num,
+    retry_rate_limited, sign,
+};
 
 const BASE: &str = "https://api.bybit.eu";
 const RECV_WINDOW: u64 = 5_000;
@@ -67,14 +70,17 @@ impl Bybit {
     pub async fn rules(&self, base: &str, quote: &str) -> Result<Rules> {
         let path = "/v5/market/instruments-info";
         let query = format!("category=spot&symbol={base}{quote}");
-        let body = self
-            .http
-            .get(format!("{BASE}{path}?{query}"))
-            .send()
-            .await?
-            .text()
-            .await?;
-        let result = result(path, &body)?;
+        let result = retry_rate_limited(|| async {
+            let body = self
+                .http
+                .get(format!("{BASE}{path}?{query}"))
+                .send()
+                .await?
+                .text()
+                .await?;
+            result(path, &body)
+        })
+        .await?;
         let d = &result["list"][0];
         Ok(Rules {
             tick: num(&d["priceFilter"]["tickSize"]).context("Bybit: brak tickSize")?,
@@ -178,9 +184,11 @@ impl Bybit {
         } else {
             format!("{BASE}{path}?{query}")
         };
-        let request = self.http.get(url);
-        let body = self.signed(request, query).await?;
-        result(path, &body)
+        retry_rate_limited(|| async {
+            let body = self.signed(self.http.get(&url), query).await?;
+            result(path, &body)
+        })
+        .await
     }
 
     async fn post(&self, path: &str, json: &str) -> Result<Value> {

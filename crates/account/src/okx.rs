@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num, sign};
+use crate::{
+    Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num,
+    retry_rate_limited, sign,
+};
 
 const BASE: &str = "https://eea.okx.com";
 const WS_PRIVATE: &str = "wss://wseea.okx.com:8443/ws/v5/private";
@@ -82,14 +85,17 @@ impl Okx {
 
     pub async fn rules(&self, base: &str, quote: &str) -> Result<Rules> {
         let path = format!("/api/v5/public/instruments?instType=SPOT&instId={base}-{quote}");
-        let body = self
-            .http
-            .get(format!("{BASE}{path}"))
-            .send()
-            .await?
-            .text()
-            .await?;
-        let data = data(&path, &body)?;
+        let data = retry_rate_limited(|| async {
+            let body = self
+                .http
+                .get(format!("{BASE}{path}"))
+                .send()
+                .await?
+                .text()
+                .await?;
+            data(&path, &body)
+        })
+        .await?;
         let d = &data[0];
         Ok(Rules {
             tick: num(&d["tickSz"]).context("OKX: brak tickSz")?,
@@ -300,8 +306,11 @@ impl Okx {
     }
 
     async fn get(&self, path: &str) -> Result<Value> {
-        let body = self.signed(reqwest::Method::GET, path, "").await?;
-        data(path, &body)
+        retry_rate_limited(|| async {
+            let body = self.signed(reqwest::Method::GET, path, "").await?;
+            data(path, &body)
+        })
+        .await
     }
 
     async fn post(&self, path: &str, json: &str) -> Result<Value> {

@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::orders::floor_to;
-use super::{Engine, MAX_BOOK_AGE, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
+use super::{BYBIT, Engine, MAX_BOOK_AGE, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
 use crate::ledger::now_ms;
 use crate::paper::{Fill, Side};
 
@@ -10,11 +10,12 @@ const MIN_TRADE_SHARE: f64 = 0.25;
 
 impl Engine {
     pub(super) async fn taker(&mut self) -> Result<()> {
+        let thresholds = self.thresholds();
         for d in 0..2 {
             let Some(plan) = self.plan_sized(d, self.size) else {
                 continue;
             };
-            if plan.expected_bps < self.min_bps {
+            if plan.expected_bps < thresholds[d] {
                 self.armed[d] = true;
                 continue;
             }
@@ -91,10 +92,16 @@ impl Engine {
     pub(super) async fn trade(&mut self, d: usize, plan: Plan, rebalancing: bool) -> Result<()> {
         let (b, s) = (d, 1 - d);
         let (fee_b, fee_s) = (self.market.fees[b].taker, self.market.fees[s].taker);
-        let (buy, sell) = tokio::join!(
-            self.ioc(b, Side::Buy, plan.qty, plan.buy_limit),
-            self.ioc(s, Side::Sell, plan.qty, plan.sell_limit),
-        );
+        let first = (self.sequential && !rebalancing).then(|| self.first_leg(b, s));
+        let (buy, sell) = match first {
+            Some(v) => self.legs_in_turn(b, s, v, &plan).await,
+            None => {
+                tokio::join!(
+                    self.ioc(b, Side::Buy, plan.qty, plan.buy_limit),
+                    self.ioc(s, Side::Sell, plan.qty, plan.sell_limit),
+                )
+            }
+        };
         let (buy, sell) = match (buy, sell) {
             (Ok(buy), Ok(sell)) => (buy, sell),
             (buy, sell) => {
@@ -198,6 +205,8 @@ impl Engine {
             "remainder_fill": [remainder.qty, remainder.avg_price],
             "remainder_venue": remainder_venue.map(|v| VENUES[v].id()),
             "limits": [plan.buy_limit, plan.sell_limit],
+            "first": first.map(|v| VENUES[v].id()),
+            "threshold": self.thresholds()[d],
             "orders": self.take_orders(),
             "open_qty": open,
             "pnl": pnl,
@@ -212,6 +221,66 @@ impl Engine {
             return self.resync().await;
         }
         self.rebalance()
+    }
+
+    pub(super) fn rooms(&self) -> Option<[f64; 2]> {
+        let mid = self.mid()?;
+        let w = self.free();
+        Some([0, 1].map(|d| w[d].quote.min(w[1 - d].base * mid)))
+    }
+
+    fn thresholds(&self) -> [f64; 2] {
+        let restoring = self.rooms().map_or([false; 2], restoring);
+        restoring.map(|r| match r {
+            true => self.min_bps.min(self.restore_min_bps),
+            false => self.min_bps,
+        })
+    }
+
+    fn first_leg(&self, b: usize, s: usize) -> usize {
+        let ask = self.books[b].borrow().ask_moved;
+        let bid = self.books[s].borrow().bid_moved;
+        match (ask, bid) {
+            (Some(ask), Some(bid)) if ask <= bid => b,
+            (Some(_), Some(_)) => s,
+            _ if b == BYBIT => b,
+            _ => s,
+        }
+    }
+
+    async fn legs_in_turn(
+        &self,
+        b: usize,
+        s: usize,
+        first: usize,
+        plan: &Plan,
+    ) -> (Result<Fill>, Result<Fill>) {
+        let (fee_b, fee_s) = (self.market.fees[b].taker, self.market.fees[s].taker);
+        let half_step = self.market.step / 2.0;
+        if first == b {
+            let buy = self.ioc(b, Side::Buy, plan.qty, plan.buy_limit).await;
+            let sell = match &buy {
+                Ok(bought) if bought.qty >= half_step => {
+                    let floor = break_even_sell(bought.avg_price, fee_b, fee_s);
+                    self.ioc(s, Side::Sell, bought.qty, floor).await
+                }
+                _ => Ok(Fill::default()),
+            };
+            (buy, sell)
+        } else {
+            let sell = self.ioc(s, Side::Sell, plan.qty, plan.sell_limit).await;
+            let buy = match &sell {
+                Ok(sold) if sold.qty >= half_step => {
+                    let affordable = self.free()[b].quote / (sold.qty * (1.0 + fee_b));
+                    let cap = break_even_buy(sold.avg_price, fee_b, fee_s)
+                        .min(plan.buy_limit * (1.0 + SIZE_MARGIN))
+                        .min(affordable);
+                    self.ioc(b, Side::Buy, sold.qty, cap).await
+                }
+                _ => Ok(Fill::default()),
+            };
+            (buy, sell)
+        }
     }
 
     async fn close_remainder(&mut self, excess: f64) -> Result<Option<(usize, Fill, f64)>> {
@@ -244,5 +313,39 @@ impl Engine {
         let fee = self.market.fees[venue].taker;
         let cash = self.inventory.wallets[venue].book(side, fill.qty, fill.value(), fee);
         Ok(Some((venue, fill, cash)))
+    }
+}
+
+fn restoring(room: [f64; 2]) -> [bool; 2] {
+    [0, 1].map(|d| room[1 - d] < room[d] / 2.0)
+}
+
+fn break_even_sell(bought: f64, fee_buy: f64, fee_sell: f64) -> f64 {
+    bought * (1.0 + fee_buy) / (1.0 - fee_sell)
+}
+
+fn break_even_buy(sold: f64, fee_buy: f64, fee_sell: f64) -> f64 {
+    sold * (1.0 - fee_sell) / (1.0 + fee_buy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_leg_limits_leave_no_loss() {
+        let (fee_buy, fee_sell) = (0.0025, 0.001);
+        let floor = break_even_sell(1.0, fee_buy, fee_sell);
+        assert!((floor * (1.0 - fee_sell) - 1.0 * (1.0 + fee_buy)).abs() < 1e-12);
+        let cap = break_even_buy(1.0, fee_buy, fee_sell);
+        assert!((1.0 * (1.0 - fee_sell) - cap * (1.0 + fee_buy)).abs() < 1e-12);
+        assert!(floor > 1.0 && cap < 1.0);
+    }
+
+    #[test]
+    fn the_direction_with_more_room_restores_balance() {
+        assert_eq!(restoring([39.0, 35.0]), [false, false]);
+        assert_eq!(restoring([4.0, 70.0]), [false, true]);
+        assert_eq!(restoring([70.0, 4.0]), [true, false]);
     }
 }

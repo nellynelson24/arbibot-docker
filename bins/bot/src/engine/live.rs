@@ -16,13 +16,8 @@ const KEEP_WARM: Duration = Duration::from_secs(15);
 
 pub async fn live(args: LiveArgs) -> Result<()> {
     let common = &args.common;
-    for (on, flag) in [
-        (common.trade_rebalance, "--trade-rebalance"),
-        (common.switch, "--switch"),
-    ] {
-        if on {
-            bail!("{flag} działa na razie tylko na sucho");
-        }
+    if common.switch {
+        bail!("--switch działa na razie tylko na sucho");
     }
     for size in [Some(common.size), common.maker_size].into_iter().flatten() {
         if size > MAX_LIVE_SIZE {

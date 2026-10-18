@@ -33,6 +33,7 @@ Klucze przekazuj zaszyfrowane (np. `gpg --symmetric`), hasło osobno.
    | `ARBIBOT_DATA` | `/opt/arbibot/data` |
    | `ARBIBOT_SECRETS` | `/opt/arbibot/secrets` |
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |
+   | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze, potem puste |
 
    Bez Portainera: te same zmienne w pliku `.env` obok `compose.yaml`, potem `docker compose pull && docker compose up -d`.
 3. Aktualizacja: nowa wartość `ARBIBOT_VERSION` i redeploy z pobraniem obrazu.
