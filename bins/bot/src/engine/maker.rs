@@ -72,6 +72,7 @@ impl Engine {
             return;
         };
         let (size, min_bps, requote) = (maker.size, maker.min_bps, maker.requote);
+        let skew = self.skew();
         let connected = maker.live.as_ref().is_none_or(|l| l.connected);
         let old = [0, 1].map(|i| maker.quotes[i].as_ref().and_then(|q| q.id.clone()));
         let mut next: [Option<Option<Resting>>; 2] = [None, None];
@@ -109,7 +110,7 @@ impl Engine {
                 let qty = floor_to(size / price, self.market.step);
                 let worth = self
                     .maker_edge(side, price, qty, &bybit)
-                    .is_some_and(|edge| edge >= min_bps)
+                    .is_some_and(|edge| edge >= min_bps - skew[i])
                     && self.maker_funded(side, price, qty, &bybit)
                     && qty >= self.market.min_qty
                     && qty * price >= self.market.min_notional;

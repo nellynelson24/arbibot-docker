@@ -29,6 +29,7 @@ impl Engine {
             self.stats.signals += 1;
             if !self.has_funds(d, &plan) {
                 self.stats.no_funds += 1;
+                self.missed_since[d] = Some(Instant::now());
                 self.ledger.write(json!({
                     "type": "skip",
                     "reason": "no_funds",
@@ -229,11 +230,21 @@ impl Engine {
         Some([0, 1].map(|d| w[d].quote.min(w[1 - d].base * mid)))
     }
 
+    pub(super) fn skew(&self) -> [f64; 2] {
+        self.rooms()
+            .map_or([0.0; 2], |room| skew(room, self.skew_bps))
+    }
+
     fn thresholds(&self) -> [f64; 2] {
-        let restoring = self.rooms().map_or([false; 2], restoring);
-        restoring.map(|r| match r {
-            true => self.min_bps.min(self.restore_min_bps),
-            false => self.min_bps,
+        let room = self.rooms();
+        let restoring = room.map_or([false; 2], restoring);
+        let skew = self.skew();
+        [0, 1].map(|d| {
+            let base = self.min_bps - skew[d];
+            match restoring[d] {
+                true => base.min(self.restore_min_bps),
+                false => base,
+            }
         })
     }
 
@@ -320,6 +331,14 @@ pub(super) fn books_fresh(books: [&Book; 2], now: Instant) -> bool {
     books.iter().all(|b| b.fresh_at(now))
 }
 
+fn skew(room: [f64; 2], skew_bps: f64) -> [f64; 2] {
+    let total = room[0] + room[1];
+    if total <= 0.0 {
+        return [0.0; 2];
+    }
+    [0, 1].map(|d| skew_bps * (room[d] - room[1 - d]) / total)
+}
+
 fn restoring(room: [f64; 2]) -> [bool; 2] {
     [0, 1].map(|d| room[1 - d] < room[d] / 2.0)
 }
@@ -364,6 +383,15 @@ mod tests {
             [&okx, &bybit],
             now + std::time::Duration::from_secs(5)
         ));
+    }
+
+    #[test]
+    fn skew_cheapens_the_restoring_direction_only_as_much_as_the_imbalance() {
+        assert_eq!(skew([50.0, 50.0], 15.0), [0.0, 0.0]);
+        assert_eq!(skew([90.0, 10.0], 15.0), [12.0, -12.0]);
+        assert_eq!(skew([0.0, 100.0], 15.0), [-15.0, 15.0]);
+        assert_eq!(skew([0.0, 0.0], 15.0), [0.0, 0.0]);
+        assert_eq!(skew([90.0, 10.0], 0.0), [0.0, 0.0]);
     }
 
     #[test]

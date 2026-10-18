@@ -110,20 +110,37 @@ services:
       bot dry-run --pair S/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-s
 
+  ab-skew:
+    <<: *dry
+    command: >-
+      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --skew-bps 15 --data-dir data/ab-skew
+
+  ab-leniwy:
+    <<: *dry
+    command: >-
+      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance --rebalance-max-cost-bps 40 --data-dir data/ab-leniwy
+
+  ab-skew-leniwy:
+    <<: *dry
+    command: >-
+      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --skew-bps 15 --lazy-rebalance
+      --rebalance-max-cost-bps 40 --data-dir data/ab-skew-leniwy
+
   live:
     <<: *service
     profiles: [live]
     command: >-
       bot live --pair TIA/USDC --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance
-      --auto-transfer --telegram --yes ${ARBIBOT_LIVE_FLAGS:-}
+      --telegram --yes ${ARBIBOT_LIVE_FLAGS:-}
     secrets:
       - federbot-okx-read
       - federbot-bybit-read
       - federbot-okx-trade
       - federbot-bybit-trade
-      - federbot-okx-withdraw
-      - federbot-bybit-withdraw
       - federbot-telegram
     healthcheck:
       test: find data/live -name '*.jsonl' -mmin -3 | grep -q .
@@ -139,9 +156,5 @@ secrets:
     file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-okx-trade
   federbot-bybit-trade:
     file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-bybit-trade
-  federbot-okx-withdraw:
-    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-okx-withdraw
-  federbot-bybit-withdraw:
-    file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-bybit-withdraw
   federbot-telegram:
     file: ${ARBIBOT_SECRETS:-${HOME}/.arbibot/secrets}/federbot-telegram

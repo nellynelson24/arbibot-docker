@@ -84,6 +84,7 @@ impl Engine {
             self.day = day;
             self.day_pnl = 0.0;
             self.day_trades = 0;
+            self.day_rebalances = 0;
         }
         self.daily_report(now);
         self.inventory.settle();

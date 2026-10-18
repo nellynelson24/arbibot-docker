@@ -30,6 +30,16 @@ pub struct Args {
         help = "Próg dla kierunku, który wyrównuje salda, gdy przeciwny ma mniej niż połowę jego środków (bp)"
     )]
     pub(super) restore_min_bps: f64,
+    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        help = "Przechył progów według sald (bp): kierunek wyrównujący salda tańszy, rozjeżdżający droższy, także dla makera"
+    )]
+    pub(super) skew_bps: f64,
+    #[arg(long)]
+    #[arg(
+        help = "Płatny rebalans handlem tylko po sygnale straconym z braku środków, najwyżej raz na 30 min i 4 razy na dobę"
+    )]
+    pub(super) lazy_rebalance: bool,
     #[arg(long, default_value_t = 45.0)]
     #[arg(help = "Najwyższy koszt rebalansu handlem (bp)")]
     pub(super) rebalance_max_cost_bps: f64,

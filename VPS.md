@@ -11,12 +11,13 @@ Każdy komplet to plik w katalogu kluczy na serwerze (`/opt/arbibot/secrets`):
 | `federbot-okx-read`, `federbot-okx-trade` | `api_key=…`, `secret=…`, `passphrase=…` |
 | `federbot-bybit-read`, `federbot-bybit-trade` | `api_key=…`, `secret=…` |
 | `federbot-telegram` | `token=…`, `chat_id=…`, `viewers=…` (może być puste) |
-| `federbot-okx-withdraw` | `api_key=…`, `secret=…`, `passphrase=…` |
-| `federbot-bybit-withdraw` | `api_key=…`, `secret=…` |
 
 Klucze przekazuj zaszyfrowane (np. `gpg --symmetric`), hasło osobno.
 
-### Autorebalans (przelewy między giełdami)
+### Przelewy między giełdami (opcjonalne, domyślnie wyłączone)
+
+Salda wyrównuje handel. Automatyczne przelewy włącza `ARBIBOT_LIVE_FLAGS=--auto-transfer` razem z kluczami do wypłat (pliki trzeba dodać też do `secrets` usługi `live` w `compose.yaml`).
+
 
 - Klucze do wypłat, osobne od handlowych, z ograniczeniem do IP serwera: OKX z prawem odczytu i wypłat; Bybit z „Transfer na konto” (Bybit EU nie daje prawa wypłat przez API, więc z Bybit salda wyrównuje handel albo przelew ręczny, a OKX przelewa na Bybit sam).
 - W książkach adresowych wpisz adresy wpłat drugiej giełdy: na OKX adresy z Bybit, na Bybit adresy z OKX, dla monety pary (TIA, sieć Celestia) i USDC (sieć Arbitrum). Giełdy wypłacają tylko na adresy z książki.

@@ -6,6 +6,9 @@ use serde_json::json;
 use super::{Engine, clock};
 
 const TRADE_REBALANCE_COOLDOWN: Duration = Duration::from_secs(600);
+const LAZY_COOLDOWN: Duration = Duration::from_secs(1800);
+const LAZY_MISSED_WITHIN: Duration = Duration::from_secs(3600);
+const LAZY_PER_DAY: u32 = 4;
 const BLOCKED_FOR: Duration = Duration::from_secs(900);
 
 impl Engine {
@@ -21,9 +24,13 @@ impl Engine {
                 *since = Some(Instant::now());
             }
         }
+        let cooldown = match self.lazy_rebalance {
+            true => LAZY_COOLDOWN,
+            false => TRADE_REBALANCE_COOLDOWN,
+        };
         if self
             .last_trade_rebalance
-            .is_some_and(|t| t.elapsed() < TRADE_REBALANCE_COOLDOWN)
+            .is_some_and(|t| t.elapsed() < cooldown)
         {
             return Ok(());
         }
@@ -31,6 +38,15 @@ impl Engine {
             return Ok(());
         };
         if self.blocked_since[short].is_none_or(|t| t.elapsed() < BLOCKED_FOR) {
+            return Ok(());
+        }
+        if self.lazy_rebalance
+            && !lazy_allows(
+                self.missed_since[short],
+                self.day_rebalances,
+                Instant::now(),
+            )
+        {
             return Ok(());
         }
         let reverse = 1 - short;
@@ -42,6 +58,7 @@ impl Engine {
         }
         self.last_trade_rebalance = Some(Instant::now());
         self.blocked_since[short] = None;
+        self.day_rebalances += 1;
         self.trade(reverse, plan, true).await
     }
 
@@ -86,6 +103,11 @@ impl Engine {
     }
 }
 
+fn lazy_allows(missed: Option<Instant>, today: u32, now: Instant) -> bool {
+    today < LAZY_PER_DAY
+        && missed.is_some_and(|t| now.saturating_duration_since(t) <= LAZY_MISSED_WITHIN)
+}
+
 fn trade_rebalance_need(room: [f64; 2], size: f64, min_trade: f64) -> Option<(usize, f64)> {
     let short = (0..2).find(|&d| room[d] < min_trade && room[1 - d] >= 3.0 * min_trade)?;
     let amount = ((room[1 - short] - room[short]) / 2.0).min(size);
@@ -95,6 +117,16 @@ fn trade_rebalance_need(room: [f64; 2], size: f64, min_trade: f64) -> Option<(us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lazy_rebalance_needs_a_recent_missed_signal_and_daily_room() {
+        let now = Instant::now();
+        assert!(!lazy_allows(None, 0, now));
+        assert!(lazy_allows(Some(now), 0, now));
+        assert!(!lazy_allows(Some(now), LAZY_PER_DAY, now));
+        let later = now + LAZY_MISSED_WITHIN + Duration::from_secs(1);
+        assert!(!lazy_allows(Some(now), 0, later));
+    }
 
     #[test]
     fn rebalances_only_when_one_side_is_blocked_and_the_other_has_room() {
