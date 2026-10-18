@@ -3,8 +3,8 @@ use reqwest::Client;
 use serde_json::{Value, json};
 
 use crate::{
-    Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num,
-    retry_rate_limited, sign,
+    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rules,
+    Side, num, retry_rate_limited, sign,
 };
 
 const BASE: &str = "https://api.bybit.eu";
@@ -104,7 +104,97 @@ impl Bybit {
                 can_withdraw: c["chainWithdraw"] == "1",
                 withdraw_fee: num(&c["withdrawFee"]),
                 withdraw_min: num(&c["withdrawMin"]),
+                withdraw_decimals: num(&c["minAccuracy"]).map(|n| n as u32),
                 confirmations: num(&c["confirmation"]).map(|n| n as u32),
+            })
+            .collect())
+    }
+
+    pub async fn deposit_addresses(&self, coin: &str) -> Result<Vec<DepositAddress>> {
+        let result = self
+            .get("/v5/asset/deposit/query-address", &format!("coin={coin}"))
+            .await?;
+        Ok(result["chains"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(DepositAddress {
+                    chain: c["chain"].as_str()?.to_owned(),
+                    address: c["addressDeposit"].as_str()?.to_owned(),
+                    tag: c["tagDeposit"]
+                        .as_str()
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_owned),
+                    to_trading: false,
+                })
+            })
+            .collect())
+    }
+
+    pub async fn withdraw(
+        &self,
+        coin: &str,
+        chain: &str,
+        to: &DepositAddress,
+        amount: &str,
+        request_id: &str,
+    ) -> Result<String> {
+        let mut body = json!({
+            "coin": coin,
+            "chain": chain,
+            "address": to.address,
+            "amount": amount,
+            "timestamp": sign::now_ms(),
+            "forceChain": 1,
+            "accountType": "FUND,UTA",
+            "feeType": 1,
+            "requestId": request_id,
+        });
+        if let Some(tag) = &to.tag {
+            body["tag"] = json!(tag);
+        }
+        let result = self
+            .post("/v5/asset/withdraw/create", &body.to_string())
+            .await?;
+        result["id"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Bybit: wypłata bez identyfikatora")
+    }
+
+    pub async fn transfer_to_trading(
+        &self,
+        coin: &str,
+        amount: &str,
+        transfer_id: &str,
+    ) -> Result<()> {
+        let body = json!({
+            "transferId": transfer_id,
+            "coin": coin,
+            "amount": amount,
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        });
+        self.post("/v5/asset/transfer/inter-transfer", &body.to_string())
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn deposits(&self, coin: &str) -> Result<Vec<Deposit>> {
+        let result = self
+            .get("/v5/asset/deposit/query-record", &format!("coin={coin}"))
+            .await?;
+        Ok(result["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                Some(Deposit {
+                    amount: num(&d["amount"])?,
+                    ts_ms: num(&d["successAt"]).unwrap_or(0.0),
+                    credited: d["status"] == 3 || d["status"] == "3",
+                })
             })
             .collect())
     }

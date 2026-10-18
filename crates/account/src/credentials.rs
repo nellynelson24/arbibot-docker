@@ -9,6 +9,7 @@ use venues::Venue;
 #[derive(Clone, Copy, Debug)]
 pub enum Scope {
     Read,
+    Withdraw,
     Trade,
 }
 
@@ -16,6 +17,7 @@ impl Scope {
     fn id(self) -> &'static str {
         match self {
             Scope::Read => "read",
+            Scope::Withdraw => "withdraw",
             Scope::Trade => "trade",
         }
     }

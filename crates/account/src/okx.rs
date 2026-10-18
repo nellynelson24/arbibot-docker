@@ -8,8 +8,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    Balance, Credentials, Fees, KeyRights, Network, OrderFill, Rules, Side, num,
-    retry_rate_limited, sign,
+    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rules,
+    Side, num, retry_rate_limited, sign,
 };
 
 const BASE: &str = "https://eea.okx.com";
@@ -119,6 +119,7 @@ impl Okx {
                 can_withdraw: d["canWd"] == true,
                 withdraw_fee: num(&d["minFee"]).or_else(|| num(&d["fee"])),
                 withdraw_min: num(&d["minWd"]),
+                withdraw_decimals: num(&d["wdTickSz"]).map(|n| n as u32),
                 confirmations: num(&d["minDepArrivalConfirm"]).map(|c| c as u32),
             })
             .collect())
@@ -200,6 +201,91 @@ impl Okx {
             Err(e) if ALREADY_FINAL.iter().any(|c| format!("{e}").contains(c)) => Ok(()),
             other => other.map(|_| ()),
         }
+    }
+
+    pub async fn deposit_addresses(&self, ccy: &str) -> Result<Vec<DepositAddress>> {
+        let data = self
+            .get(&format!("/api/v5/asset/deposit-address?ccy={ccy}"))
+            .await?;
+        Ok(data
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                Some(DepositAddress {
+                    chain: d["chain"].as_str()?.to_owned(),
+                    address: d["addr"].as_str()?.to_owned(),
+                    tag: ["tag", "memo", "pmtId"]
+                        .iter()
+                        .filter_map(|k| d[*k].as_str())
+                        .find(|t| !t.is_empty())
+                        .map(str::to_owned),
+                    to_trading: d["to"] == "18",
+                })
+            })
+            .collect())
+    }
+
+    pub async fn withdraw(
+        &self,
+        ccy: &str,
+        amount: &str,
+        chain: &str,
+        to: &DepositAddress,
+        client_id: &str,
+        rcvr_info: Option<&Value>,
+    ) -> Result<String> {
+        let address = match &to.tag {
+            Some(tag) => format!("{}:{tag}", to.address),
+            None => to.address.clone(),
+        };
+        let mut body = json!({
+            "ccy": ccy,
+            "amt": amount,
+            "dest": "4",
+            "toAddr": address,
+            "chain": chain,
+            "clientId": client_id,
+        });
+        if let Some(info) = rcvr_info {
+            body["rcvrInfo"] = info.clone();
+        }
+        let data = self
+            .post("/api/v5/asset/withdrawal", &body.to_string())
+            .await?;
+        data[0]["wdId"]
+            .as_str()
+            .map(str::to_owned)
+            .context("OKX: wypłata bez identyfikatora")
+    }
+
+    pub async fn transfer(&self, ccy: &str, amount: &str, to: crate::Wallet) -> Result<()> {
+        let (from, to) = match to {
+            crate::Wallet::Trading => ("6", "18"),
+            crate::Wallet::Funding => ("18", "6"),
+        };
+        let body = json!({"ccy": ccy, "amt": amount, "from": from, "to": to});
+        self.post("/api/v5/asset/transfer", &body.to_string())
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn deposits(&self, ccy: &str) -> Result<Vec<Deposit>> {
+        let data = self
+            .get(&format!("/api/v5/asset/deposit-history?ccy={ccy}"))
+            .await?;
+        Ok(data
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                Some(Deposit {
+                    amount: num(&d["amt"])?,
+                    ts_ms: num(&d["ts"])?,
+                    credited: matches!(d["state"].as_str(), Some("1" | "2")),
+                })
+            })
+            .collect())
     }
 
     pub async fn open_orders(&self, base: &str, quote: &str) -> Result<Vec<String>> {

@@ -193,12 +193,39 @@ async fn routes(accounts: &Accounts, asset: &str) -> Result<Routes> {
 }
 
 fn route(okx: &[Network], bybit: &[Network]) -> Routes {
+    cheapest(okx, bybit).map_or([None, None], |r| [Some(r.fees[0]), Some(r.fees[1])])
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Route {
+    pub(super) chains: [String; 2],
+    pub(super) fees: [f64; 2],
+    pub(super) min: [f64; 2],
+    pub(super) decimals: [u32; 2],
+}
+
+pub(super) async fn route_of(accounts: &Accounts, asset: &str) -> Result<Option<Route>> {
+    Ok(cheapest(
+        &accounts.okx.networks(asset).await?,
+        &accounts.bybit.networks(asset).await?,
+    ))
+}
+
+fn cheapest(okx: &[Network], bybit: &[Network]) -> Option<Route> {
     okx.iter()
         .filter_map(|o| {
             let b = bybit.iter().find(|b| b.key() == o.key())?;
             let open = o.can_withdraw && o.can_deposit && b.can_withdraw && b.can_deposit;
-            open.then_some((o.withdraw_fee?, b.withdraw_fee?))
+            open.then_some(())?;
+            Some(Route {
+                chains: [o.chain.clone(), b.chain.clone()],
+                fees: [o.withdraw_fee?, b.withdraw_fee?],
+                min: [o.withdraw_min.unwrap_or(0.0), b.withdraw_min.unwrap_or(0.0)],
+                decimals: [
+                    o.withdraw_decimals.unwrap_or(6),
+                    b.withdraw_decimals.unwrap_or(6),
+                ],
+            })
         })
-        .min_by(|x, y| (x.0 + x.1).total_cmp(&(y.0 + y.1)))
-        .map_or([None, None], |(a, b)| [Some(a), Some(b)])
+        .min_by(|x, y| (x.fees[0] + x.fees[1]).total_cmp(&(y.fees[0] + y.fees[1])))
 }

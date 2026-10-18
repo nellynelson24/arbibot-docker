@@ -33,6 +33,8 @@ enum Command {
     Telegram(telegram::Args),
     #[command(about = "Raport: handel na żywo, wszystkie dry-runy i rynek ze skanera, z wnioskami", long_about = None)]
     Report(report::Args),
+    #[command(about = "Przelew monety albo waluty między giełdami (z --plan tylko pokazuje trasę)", long_about = None)]
+    Transfer(engine::TransferArgs),
 }
 
 #[tokio::main]
@@ -48,5 +50,6 @@ async fn main() -> Result<()> {
         Command::Live(args) => engine::live(args).await,
         Command::Telegram(args) => telegram::setup(args).await,
         Command::Report(args) => report::run(args).await,
+        Command::Transfer(args) => engine::transfer(args).await,
     }
 }

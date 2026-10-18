@@ -8,6 +8,7 @@ mod rebalance;
 mod status;
 mod switch;
 mod taker;
+mod transfer;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -33,6 +34,7 @@ pub use args::{Args, LiveArgs};
 pub use live::live;
 use maker::Maker;
 use market::load_market;
+pub use transfer::{TransferArgs, transfer};
 
 const VENUES: [Venue; 2] = [Venue::Okx, Venue::Bybit];
 const OKX: usize = 0;
@@ -114,6 +116,7 @@ struct Engine {
     maker: Option<Maker>,
     trades: Option<mpsc::UnboundedReceiver<Trade>>,
     maker_events: Option<mpsc::UnboundedReceiver<maker_live::Event>>,
+    auto: Option<transfer::AutoTransfer>,
     books: [watch::Receiver<Book>; 2],
     latency: [Duration; 2],
     size: f64,
@@ -195,6 +198,7 @@ async fn run(args: Args, live: Option<(Accounts, bool, bool)>) -> Result<()> {
         }),
         trades,
         maker_events: None,
+        auto: None,
         books,
         latency: [
             Duration::from_millis(args.okx_latency_ms),
@@ -254,6 +258,19 @@ impl Engine {
         if self.live.is_some() {
             self.prepare_live(mid, buy_inventory, confirmed).await?;
             self.start_live_maker().await?;
+            if args.auto_transfer {
+                let (base, quote) = (self.market.base.clone(), self.market.quote.clone());
+                let mover = transfer::Mover::new(&self.accounts, &base, &quote, true).await?;
+                self.auto = Some(transfer::AutoTransfer::new(
+                    mover,
+                    args.max_transfers,
+                    args.max_transfer_value,
+                ));
+                println!(
+                    "Autorebalans włączony: do {} przelewów na dobę, do {} {quote} na przelew.",
+                    args.max_transfers, args.max_transfer_value
+                );
+            }
             self.start_equity = self.inventory.equity(mid);
 
             self.last_tick_ms = now_ms();
@@ -275,6 +292,7 @@ impl Engine {
             "sequential": args.sequential,
             "trade_rebalance": args.trade_rebalance,
             "restore_min_bps": args.restore_min_bps,
+            "auto_transfer": self.auto.is_some(),
             "maker": args.maker,
             "maker_min_bps": args.maker_min_bps,
             "latency_ms": [args.okx_latency_ms, args.bybit_latency_ms],
@@ -308,6 +326,7 @@ impl Engine {
         status.tick().await;
         let review_every = Duration::from_secs_f64(args.review_hours.max(0.01) * 3600.0);
         let mut review = interval_at(tokio::time::Instant::now() + review_every, review_every);
+        let mut transfers = interval(transfer::CHECK_EVERY);
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
         'run: loop {
@@ -329,6 +348,7 @@ impl Engine {
                     }
                     _ = tick.tick() => self.tick()?,
                     _ = status.tick() => self.status()?,
+                    _ = transfers.tick(), if self.auto.is_some() => self.transfer_step().await,
                     _ = review.tick(), if self.switching => match self.review().await {
                         Ok(true) => continue 'run,
                         Ok(false) => {}

@@ -7,6 +7,27 @@ pub use bybit::Bybit;
 pub use credentials::{Credentials, Scope, secret};
 pub use okx::{Okx, OrderEvent, OrderUpdate};
 
+#[derive(Debug, Clone, Copy)]
+pub struct Deposit {
+    pub amount: f64,
+    pub ts_ms: f64,
+    pub credited: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wallet {
+    Funding,
+    Trading,
+}
+
+#[derive(Debug, Clone)]
+pub struct DepositAddress {
+    pub chain: String,
+    pub address: String,
+    pub tag: Option<String>,
+    pub to_trading: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Balance {
     pub account: &'static str,
@@ -54,6 +75,7 @@ pub struct Network {
     pub can_withdraw: bool,
     pub withdraw_fee: Option<f64>,
     pub withdraw_min: Option<f64>,
+    pub withdraw_decimals: Option<u32>,
     pub confirmations: Option<u32>,
 }
 

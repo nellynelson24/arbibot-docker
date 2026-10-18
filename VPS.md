@@ -11,8 +11,17 @@ Każdy komplet to plik w katalogu kluczy na serwerze (`/opt/arbibot/secrets`):
 | `federbot-okx-read`, `federbot-okx-trade` | `api_key=…`, `secret=…`, `passphrase=…` |
 | `federbot-bybit-read`, `federbot-bybit-trade` | `api_key=…`, `secret=…` |
 | `federbot-telegram` | `token=…`, `chat_id=…`, `viewers=…` (może być puste) |
+| `federbot-okx-withdraw` | `api_key=…`, `secret=…`, `passphrase=…` |
+| `federbot-bybit-withdraw` | `api_key=…`, `secret=…` |
 
 Klucze przekazuj zaszyfrowane (np. `gpg --symmetric`), hasło osobno.
+
+### Autorebalans (przelewy między giełdami)
+
+- Klucze do wypłat, osobne od handlowych, z ograniczeniem do IP serwera: OKX z prawem odczytu i wypłat, Bybit z prawem wypłat i przelewów między kontami.
+- W książkach adresowych wpisz adresy wpłat drugiej giełdy: na OKX adresy z Bybit, na Bybit adresy z OKX, dla monety pary (TIA, sieć Celestia) i USDC (sieć Arbitrum). Giełdy wypłacają tylko na adresy z książki.
+- Bot przelewa połowę różnicy, gdy na giełdzie zostaje mniej niż 40% poziomu docelowego: najwyżej 6 przelewów na dobę i 100 USDC na przelew, tylko na adresy wpłat własnych kont. Środki na kontach funding (także ręczne wpłaty) przenosi na trading.
+- Test w konsoli kontenera `arbibot-live-1`: `bot transfer --asset USDC --from bybit --plan` pokazuje trasę i adres bez wysyłania; `bot transfer --asset USDC --from bybit --amount 2` wysyła 2 USDC po potwierdzeniu TAK.
 
 ## Serwer
 
@@ -29,7 +38,7 @@ Klucze przekazuj zaszyfrowane (np. `gpg --symmetric`), hasło osobno.
 
    | Zmienna | Wartość |
    |---|---|
-   | `ARBIBOT_VERSION` | np. `1.0.0` |
+   | `ARBIBOT_VERSION` | np. `1.2.0` |
    | `ARBIBOT_DATA` | `/opt/arbibot/data` |
    | `ARBIBOT_SECRETS` | `/opt/arbibot/secrets` |
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |

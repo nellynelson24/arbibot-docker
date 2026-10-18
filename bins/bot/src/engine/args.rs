@@ -33,6 +33,17 @@ pub struct Args {
     #[arg(long, default_value_t = 45.0)]
     #[arg(help = "Najwyższy koszt rebalansu handlem (bp)")]
     pub(super) rebalance_max_cost_bps: f64,
+    #[arg(long)]
+    #[arg(
+        help = "Na żywo: automatyczne przelewy monety i waluty między giełdami (klucze wypłat federbot-<giełda>-withdraw)"
+    )]
+    pub(super) auto_transfer: bool,
+    #[arg(long, default_value_t = 6)]
+    #[arg(help = "Najwięcej automatycznych przelewów na dobę")]
+    pub(super) max_transfers: u32,
+    #[arg(long, default_value_t = 100.0)]
+    #[arg(help = "Najwyższa wartość jednego automatycznego przelewu (waluta kwotowania)")]
+    pub(super) max_transfer_value: f64,
     #[arg(long, default_value_t = 100)]
     #[arg(help = "Na sucho: opóźnienie zleceń na OKX (ms)")]
     pub(super) okx_latency_ms: u64,
