@@ -24,6 +24,7 @@ const NO_PERMISSION: [&str; 2] = ["50120", "10005"];
 
 pub(super) struct Mover {
     withdraw: Option<Accounts>,
+    can_send: [bool; 2],
     rcvr_info: Option<Value>,
     routes: [Option<Route>; 2],
     assets: [String; 2],
@@ -70,6 +71,7 @@ impl Mover {
         quote: &str,
         with_withdraw: bool,
     ) -> Result<Mover> {
+        let mut can_send = [false; 2];
         let withdraw = if with_withdraw {
             let client = http()?;
             let keys = Accounts {
@@ -86,9 +88,16 @@ impl Mover {
                     .await
                     .context("klucz wypłat Bybit")?,
             ];
-            for (venue, rights) in VENUES.iter().zip(rights) {
-                if !rights.withdraw {
-                    bail!("{}: klucz wypłat nie ma prawa wypłat", venue.name());
+            can_send = rights.map(|r| r.withdraw);
+            if can_send == [false; 2] {
+                bail!("żaden klucz wypłat nie ma prawa wypłat");
+            }
+            for (venue, send) in VENUES.iter().zip(can_send) {
+                if !send {
+                    println!(
+                        "{}: klucz bez prawa wypłat — z tej giełdy salda wyrówna handel albo przelew ręczny",
+                        venue.name()
+                    );
                 }
             }
             Some(keys)
@@ -102,6 +111,7 @@ impl Mover {
             .context("rcvr_info w federbot-okx-withdraw nie jest JSON-em")?;
         Ok(Mover {
             withdraw,
+            can_send,
             rcvr_info,
             routes: [route_of(read, base).await?, route_of(read, quote).await?],
             assets: [base.to_owned(), quote.to_owned()],
@@ -153,6 +163,9 @@ impl Mover {
         amount: f64,
     ) -> Result<Sent> {
         let keys = self.keys()?;
+        if !self.can_send[from] {
+            bail!("{}: klucz bez prawa wypłat", VENUES[from].name());
+        }
         let route = self.route(asset)?;
         let name = &self.assets[asset];
         let address = self.destination(read, asset, 1 - from).await?;
@@ -306,7 +319,11 @@ fn transfer_id() -> String {
     )
 }
 
-pub(super) fn plan_move(wallets: [Wallet; 2], mid: f64) -> Option<(usize, usize, f64)> {
+pub(super) fn plan_move(
+    wallets: [Wallet; 2],
+    mid: f64,
+    can_send: [bool; 2],
+) -> Option<(usize, usize, f64)> {
     let holdings = [
         [wallets[OKX].base, wallets[BYBIT].base],
         [wallets[OKX].quote, wallets[BYBIT].quote],
@@ -325,7 +342,12 @@ pub(super) fn plan_move(wallets: [Wallet; 2], mid: f64) -> Option<(usize, usize,
                 return None;
             }
             let amount = (holdings[asset][1 - poor] - holdings[asset][poor]) / 2.0;
-            (amount * price[asset] >= MIN_VALUE).then_some((share, asset, 1 - poor, amount))
+            (can_send[1 - poor] && amount * price[asset] >= MIN_VALUE).then_some((
+                share,
+                asset,
+                1 - poor,
+                amount,
+            ))
         })
         .min_by(|x, y| x.0.total_cmp(&y.0))
         .map(|(_, asset, from, amount)| (asset, from, amount))
@@ -400,7 +422,7 @@ impl Engine {
                 self.tell(line);
             }
         } else if auto.today < auto.max_per_day
-            && let Some((asset, from, amount)) = plan_move(self.free(), mid)
+            && let Some((asset, from, amount)) = plan_move(self.free(), mid, auto.mover.can_send)
         {
             let price = if asset == 0 { mid } else { 1.0 };
             let amount = amount.min(auto.max_value / price);
@@ -553,18 +575,36 @@ mod tests {
     #[test]
     fn moves_half_the_gap_of_the_scarcer_asset() {
         assert_eq!(
-            plan_move([wallet(50.0, 50.0), wallet(50.0, 50.0)], 1.0),
+            plan_move([wallet(50.0, 50.0), wallet(50.0, 50.0)], 1.0, [true; 2]),
             None
         );
         assert_eq!(
-            plan_move([wallet(10.0, 50.0), wallet(90.0, 50.0)], 1.0),
+            plan_move([wallet(10.0, 50.0), wallet(90.0, 50.0)], 1.0, [true; 2]),
             Some((0, BYBIT, 40.0))
         );
         assert_eq!(
-            plan_move([wallet(50.0, 95.0), wallet(50.0, 5.0)], 1.0),
+            plan_move([wallet(50.0, 95.0), wallet(50.0, 5.0)], 1.0, [true; 2]),
             Some((1, OKX, 45.0))
         );
-        assert_eq!(plan_move([wallet(1.0, 50.0), wallet(9.0, 50.0)], 1.0), None);
+        assert_eq!(
+            plan_move([wallet(1.0, 50.0), wallet(9.0, 50.0)], 1.0, [true; 2]),
+            None
+        );
+    }
+
+    #[test]
+    fn only_venues_that_can_withdraw_send() {
+        let okx_poor = [wallet(10.0, 50.0), wallet(90.0, 50.0)];
+        assert_eq!(plan_move(okx_poor, 1.0, [true, false]), None);
+        assert_eq!(
+            plan_move(okx_poor, 1.0, [false, true]),
+            Some((0, BYBIT, 40.0))
+        );
+        let bybit_poor = [wallet(90.0, 50.0), wallet(10.0, 50.0)];
+        assert_eq!(
+            plan_move(bybit_poor, 1.0, [true, false]),
+            Some((0, OKX, 40.0))
+        );
     }
 
     #[test]

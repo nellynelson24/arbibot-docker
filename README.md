@@ -18,7 +18,7 @@ Ustawienia bota na żywo są w `compose.yaml`: TIA/USDC, transakcja do 40 USDC, 
 - `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
 - Salda wyrównują się same: kierunek, który je wyrównuje, ma niższy próg (`--restore-min-bps`, 30 bp), gdy przeciwny ma mniej niż połowę jego środków.
 - `--trade-rebalance`: gdy kierunek jest zablokowany od 15 min, transakcja odwrotna kosztem do 45 bp, najwyżej raz na 10 min.
-- `--auto-transfer`: przelewy monety i USDC między giełdami, gdy na jednej zostaje mniej niż 40% poziomu docelowego (najwyżej 6 na dobę, 100 USDC na przelew), tylko na adresy wpłat własnych kont. Wymaga osobnych kluczy do wypłat, opis w [VPS.md](VPS.md). Ręcznie: `bot transfer --asset USDC --from bybit --plan`.
+- `--auto-transfer`: przelewy monety i USDC między giełdami, gdy na jednej zostaje mniej niż 40% poziomu docelowego (najwyżej 6 na dobę, 100 USDC na przelew), tylko na adresy wpłat własnych kont, z giełdy, której klucz ma prawo wypłat (Bybit EU go nie daje). Wymaga osobnych kluczy do wypłat, opis w [VPS.md](VPS.md). Ręcznie: `bot transfer --asset USDC --from bybit --plan`.
 
 Warianty na sucho (`dry` i `ab-*`) różnią się od głównego jednym ustawieniem: kolejnością nóg, rebalansem, progiem, marżą makera, opóźnieniem albo parą. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
