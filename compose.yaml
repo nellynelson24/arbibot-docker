@@ -2,7 +2,8 @@ name: arbibot
 
 x-arbibot-labels: &arbibot-labels
   dev.dozzle.group: arbibot
-  logs.access: arbibot
+  log.access.nellynelson: "true"
+  log.access.test: "true"
 
 x-service: &service
   image: ghcr.io/nellynelson24/arbibot-docker:${ARBIBOT_VERSION:-latest}
@@ -16,10 +17,6 @@ x-service: &service
   stop_grace_period: 30s
   volumes:
     - ${ARBIBOT_DATA:-./data}:/app/data
-  logging:
-    options:
-      max-size: 10m
-      max-file: "3"
 
 x-dry: &dry
   <<: *service
