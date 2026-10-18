@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use super::rebalance::trade_rebalance_need;
 use super::{Engine, SIZE_MARGIN, VENUES, clock};
 use crate::ledger::now_ms;
 use crate::{report, selector};
@@ -129,12 +130,17 @@ impl Engine {
         if self.live.is_some() {
             let w = &self.inventory.wallets;
             let min_trade = self.min_trade();
+            let short = self
+                .rooms()
+                .and_then(|room| trade_rebalance_need(room, self.size, min_trade))
+                .map(|(short, _)| short);
             for d in 0..2 {
                 if w[d].quote < min_trade * (1.0 + SIZE_MARGIN) || w[1 - d].base * mid < min_trade {
                     blocked += &format!(
-                        " | brak środków na kup {} → sprzedaj {} (przelej ręcznie)",
+                        " | brak środków na kup {} → sprzedaj {} ({})",
                         VENUES[d].name(),
-                        VENUES[1 - d].name()
+                        VENUES[1 - d].name(),
+                        blocked_hint(self.trade_rebalance, self.lazy_rebalance, short == Some(d))
                     );
                 }
             }
@@ -240,5 +246,29 @@ impl Engine {
         println!("\n{line}");
         self.tell(format!("koniec pracy. {line}"));
         Ok(())
+    }
+}
+
+fn blocked_hint(trade_rebalance: bool, lazy: bool, can_rebalance: bool) -> &'static str {
+    match (trade_rebalance && can_rebalance, lazy) {
+        (true, false) => "bot wyrówna salda handlem po 15 min",
+        (true, true) => "bot wyrówna salda handlem po straconym sygnale",
+        (false, _) => "za mało środków na rebalans handlem — przelej ręcznie",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocked_hint_asks_for_a_transfer_only_when_trading_cannot_rebalance() {
+        assert_eq!(
+            blocked_hint(true, false, true),
+            "bot wyrówna salda handlem po 15 min"
+        );
+        assert!(blocked_hint(true, true, true).contains("straconym sygnale"));
+        assert!(blocked_hint(true, false, false).contains("przelej ręcznie"));
+        assert!(blocked_hint(false, false, true).contains("przelej ręcznie"));
     }
 }

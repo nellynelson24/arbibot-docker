@@ -108,7 +108,11 @@ fn lazy_allows(missed: Option<Instant>, today: u32, now: Instant) -> bool {
         && missed.is_some_and(|t| now.saturating_duration_since(t) <= LAZY_MISSED_WITHIN)
 }
 
-fn trade_rebalance_need(room: [f64; 2], size: f64, min_trade: f64) -> Option<(usize, f64)> {
+pub(super) fn trade_rebalance_need(
+    room: [f64; 2],
+    size: f64,
+    min_trade: f64,
+) -> Option<(usize, f64)> {
     let short = (0..2).find(|&d| room[d] < min_trade && room[1 - d] >= 3.0 * min_trade)?;
     let amount = ((room[1 - short] - room[short]) / 2.0).min(size);
     (amount >= min_trade).then_some((short, amount))
