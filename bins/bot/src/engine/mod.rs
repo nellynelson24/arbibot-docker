@@ -260,16 +260,22 @@ impl Engine {
             self.start_live_maker().await?;
             if args.auto_transfer {
                 let (base, quote) = (self.market.base.clone(), self.market.quote.clone());
-                let mover = transfer::Mover::new(&self.accounts, &base, &quote, true).await?;
-                self.auto = Some(transfer::AutoTransfer::new(
-                    mover,
-                    args.max_transfers,
-                    args.max_transfer_value,
-                ));
-                println!(
-                    "Autorebalans włączony: do {} przelewów na dobę, do {} {quote} na przelew.",
-                    args.max_transfers, args.max_transfer_value
-                );
+                let line = match transfer::Mover::new(&self.accounts, &base, &quote, true).await {
+                    Ok(mover) => {
+                        self.auto = Some(transfer::AutoTransfer::new(
+                            mover,
+                            args.max_transfers,
+                            args.max_transfer_value,
+                        ));
+                        format!(
+                            "Autorebalans włączony: do {} przelewów na dobę, do {} {quote} na przelew.",
+                            args.max_transfers, args.max_transfer_value
+                        )
+                    }
+                    Err(e) => format!("Autorebalans wyłączony ({e:#}); handel działa bez niego."),
+                };
+                println!("{line}");
+                self.tell(line);
             }
             self.start_equity = self.inventory.equity(mid);
 
