@@ -4,6 +4,8 @@
 
 Na OKX EEA i Bybit EU utwórz klucze tylko dla serwera: do odczytu i do handlu spot, bez prawa wypłat, z ograniczeniem do adresu IP serwera.
 
+Na OKX w kluczu handlowym zaznacz na liście Crypto monetę pary (np. TIA) albo wszystkie waluty. Bez tego każde zlecenie kończy się kodem 50123 „This API Key does not have trading permission for the Crypto”.
+
 Każdy komplet to plik w katalogu kluczy na serwerze (`/opt/arbibot/secrets`):
 
 | Plik | Linie |
