@@ -4,7 +4,7 @@ use serde_json::json;
 use super::orders::floor_to;
 use std::time::Instant;
 
-use super::{BYBIT, Engine, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
+use super::{BYBIT, Engine, OKX, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
 use crate::book::Book;
 use crate::ledger::now_ms;
 use crate::paper::{Fill, Side};
@@ -93,9 +93,9 @@ impl Engine {
     pub(super) async fn trade(&mut self, d: usize, plan: Plan, rebalancing: bool) -> Result<()> {
         let (b, s) = (d, 1 - d);
         let (fee_b, fee_s) = (self.market.fees[b].taker, self.market.fees[s].taker);
-        let first = (self.sequential && !rebalancing).then(|| self.first_leg(b, s));
+        let first = leg_order(self.sequential, rebalancing, self.first_leg(b, s));
         let (buy, sell) = match first {
-            Some(v) => self.legs_in_turn(b, s, v, &plan).await,
+            Some(v) => self.legs_in_turn(b, s, v, &plan, rebalancing).await,
             None => {
                 tokio::join!(
                     self.ioc(b, Side::Buy, plan.qty, plan.buy_limit),
@@ -106,13 +106,14 @@ impl Engine {
         let (buy, sell) = match (buy, sell) {
             (Ok(buy), Ok(sell)) => (buy, sell),
             (buy, sell) => {
+                let done = filled_legs([(b, Side::Buy, &buy), (s, Side::Sell, &sell)]);
                 let errors: Vec<String> = [buy.err(), sell.err()]
                     .into_iter()
                     .flatten()
                     .map(|e| format!("{e:#}"))
                     .collect();
                 self.halt(format!(
-                    "błąd zlecenia ({}) — sprawdź salda na giełdach",
+                    "błąd zlecenia ({}){done} — sprawdź salda na giełdach",
                     errors.join("; ")
                 ))?;
                 self.last_tick_ms = now_ms();
@@ -265,6 +266,7 @@ impl Engine {
         s: usize,
         first: usize,
         plan: &Plan,
+        rebalancing: bool,
     ) -> (Result<Fill>, Result<Fill>) {
         let (fee_b, fee_s) = (self.market.fees[b].taker, self.market.fees[s].taker);
         let half_step = self.market.step / 2.0;
@@ -272,7 +274,10 @@ impl Engine {
             let buy = self.ioc(b, Side::Buy, plan.qty, plan.buy_limit).await;
             let sell = match &buy {
                 Ok(bought) if bought.qty >= half_step => {
-                    let floor = break_even_sell(bought.avg_price, fee_b, fee_s);
+                    let floor = match rebalancing {
+                        true => plan.sell_limit,
+                        false => break_even_sell(bought.avg_price, fee_b, fee_s),
+                    };
                     self.ioc(s, Side::Sell, bought.qty, floor).await
                 }
                 _ => Ok(Fill::default()),
@@ -283,9 +288,12 @@ impl Engine {
             let buy = match &sell {
                 Ok(sold) if sold.qty >= half_step => {
                     let affordable = self.free()[b].quote / (sold.qty * (1.0 + fee_b));
-                    let cap = break_even_buy(sold.avg_price, fee_b, fee_s)
-                        .min(plan.buy_limit * (1.0 + SIZE_MARGIN))
-                        .min(affordable);
+                    let cap = match rebalancing {
+                        true => plan.buy_limit,
+                        false => break_even_buy(sold.avg_price, fee_b, fee_s)
+                            .min(plan.buy_limit * (1.0 + SIZE_MARGIN)),
+                    }
+                    .min(affordable);
                     self.ioc(b, Side::Buy, sold.qty, cap).await
                 }
                 _ => Ok(Fill::default()),
@@ -343,6 +351,37 @@ fn restoring(room: [f64; 2]) -> [bool; 2] {
     [0, 1].map(|d| room[1 - d] < room[d] / 2.0)
 }
 
+fn leg_order(sequential: bool, rebalancing: bool, by_price: usize) -> Option<usize> {
+    match (rebalancing, sequential) {
+        (true, _) => Some(OKX),
+        (false, true) => Some(by_price),
+        (false, false) => None,
+    }
+}
+
+fn filled_legs(legs: [(usize, Side, &Result<Fill>); 2]) -> String {
+    let done: Vec<String> = legs
+        .into_iter()
+        .filter_map(|(v, side, fill)| {
+            let fill = fill.as_ref().ok().filter(|f| f.qty > 0.0)?;
+            let action = match side {
+                Side::Buy => "kupno",
+                Side::Sell => "sprzedaż",
+            };
+            Some(format!(
+                "{action} {} {} po {}",
+                VENUES[v].name(),
+                fill.qty,
+                fill.avg_price
+            ))
+        })
+        .collect();
+    match done.is_empty() {
+        true => ", nic nie zostało wykonane".to_owned(),
+        false => format!(", wykonane: {}", done.join(", ")),
+    }
+}
+
 fn break_even_sell(bought: f64, fee_buy: f64, fee_sell: f64) -> f64 {
     bought * (1.0 + fee_buy) / (1.0 - fee_sell)
 }
@@ -354,6 +393,35 @@ fn break_even_buy(sold: f64, fee_buy: f64, fee_sell: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebalance_always_starts_on_okx() {
+        assert_eq!(leg_order(false, true, BYBIT), Some(OKX));
+        assert_eq!(leg_order(true, true, BYBIT), Some(OKX));
+        assert_eq!(leg_order(true, false, BYBIT), Some(BYBIT));
+        assert_eq!(leg_order(false, false, BYBIT), None);
+    }
+
+    #[test]
+    fn halt_message_names_the_legs_that_filled() {
+        let filled: Result<Fill> = Ok(Fill {
+            qty: 55.35,
+            avg_price: 0.607,
+        });
+        let rejected: Result<Fill> = Err(anyhow::anyhow!("50123"));
+        assert_eq!(
+            filled_legs([(OKX, Side::Buy, &rejected), (BYBIT, Side::Sell, &filled)]),
+            format!(
+                ", wykonane: sprzedaż {} 55.35 po 0.607",
+                VENUES[BYBIT].name()
+            )
+        );
+        let empty: Result<Fill> = Ok(Fill::default());
+        assert_eq!(
+            filled_legs([(OKX, Side::Buy, &rejected), (BYBIT, Side::Sell, &empty)]),
+            ", nic nie zostało wykonane"
+        );
+    }
 
     #[test]
     fn second_leg_limits_leave_no_loss() {

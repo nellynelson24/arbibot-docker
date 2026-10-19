@@ -19,7 +19,7 @@ Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje 
 
 - `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
 - Salda wyrównują się same: kierunek, który je wyrównuje, ma niższy próg (`--restore-min-bps`, 30 bp), gdy przeciwny ma mniej niż połowę jego środków.
-- `--trade-rebalance`: gdy kierunek jest zablokowany od 15 min, transakcja odwrotna kosztem do 45 bp, najwyżej raz na 10 min. Wymaga, by kierunek odwrotny miał co najmniej 3 × minimalną transakcję (30 USDC). Komunikat o braku środków na Telegramie mówi, czy bot wyrówna salda sam, czy trzeba przelać ręcznie.
+- `--trade-rebalance`: gdy kierunek jest zablokowany od 15 min, transakcja odwrotna kosztem do 45 bp, najwyżej raz na 10 min. Wymaga, by kierunek odwrotny miał co najmniej 3 × minimalną transakcję (30 USDC). Nogi rebalansu idą po kolei: najpierw OKX, Bybit dopiero po jej wypełnieniu, z limitem z planu rebalansu. Komunikat o braku środków na Telegramie mówi, czy bot wyrówna salda sam, czy trzeba przelać ręcznie.
 - `--skew-bps K` (opcja, A/B na sucho): przechył progów według sald — kierunek wyrównujący salda ma próg niższy o K × nierównowagę, rozjeżdżający wyższy; tak samo marża makera. Salda wyrównują się przy okazji zarabiających transakcji.
 - `--lazy-rebalance` (opcja, A/B na sucho): płatny rebalans handlem tylko po sygnale straconym z braku środków, najwyżej raz na 30 min i 4 razy na dobę.
 - `--auto-transfer` (domyślnie wyłączone): przelewy monety i USDC między giełdami z giełdy, której klucz ma prawo wypłat (Bybit EU go nie daje), tylko na adresy wpłat własnych kont; opis w [VPS.md](VPS.md).
@@ -49,7 +49,7 @@ Pliki w `~/.arbibot/secrets/`, opis w [VPS.md](VPS.md). Klucze do odczytu i hand
 
 - `docker compose stop live` kończy pracę i anuluje zlecenia maker.
 - `touch data/STOP` albo `/stop` na Telegramie wstrzymuje handel.
-- Po błędzie zlecenia albo limicie straty bot sam tworzy `data/STOP`. Wznowienie: usuń plik i `docker compose restart live`.
+- Po błędzie zlecenia albo limicie straty bot sam tworzy `data/STOP`; komunikat podaje, które nogi zostały wykonane. Wznowienie: usuń plik i `docker compose restart live`.
 
 ## Raport
 
