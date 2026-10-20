@@ -45,6 +45,8 @@ Salda wyrównuje handel. Automatyczne przelewy włącza `ARBIBOT_LIVE_FLAGS=--au
    | `ARBIBOT_DATA` | `/opt/arbibot/data` |
    | `ARBIBOT_SECRETS` | `/opt/arbibot/secrets` |
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |
+   | `ARBIBOT_LIVE_PAIR` | para bota na żywo, domyślnie `TIA/USDC` |
+   | `ARBIBOT_MAKER_MIN_BPS` | marża makera na żywo w bp, domyślnie `20` |
    | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze (kupuje brakującą monetę pary, innych nie sprzedaje), potem puste |
 
    Bez Portainera: te same zmienne w pliku `.env` obok `compose.yaml`, potem `docker compose pull && docker compose up -d`.
@@ -62,3 +64,9 @@ Na żywo może działać tylko jeden bot naraz: najpierw zatrzymaj tego na Macu.
 3. Serwer: `COMPOSE_PROFILES=live` w Portainerze (albo `docker compose --profile live up -d live`).
 
 Zatrzymanie handlu: `touch /opt/arbibot/data/STOP` albo `/stop` na Telegramie.
+
+Zmiana pary na żywo:
+1. Na OKX dodaj nową monetę do listy Crypto w kluczu handlowym.
+2. Zatrzymaj `live` i sprzedaj starą monetę za USDC na obu giełdach.
+3. `ARBIBOT_LIVE_PAIR` na nową parę, `ARBIBOT_LIVE_FLAGS` z `--buy-inventory`, redeploy.
+4. Po wiadomości „Start” z saldami nowej monety usuń `--buy-inventory` z `ARBIBOT_LIVE_FLAGS`.

@@ -11,7 +11,7 @@ docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
 ```
 
-Ustawienia bota na żywo są w `compose.yaml`: TIA/USDC, transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą od 20 bp, dzienny limit straty 2 USDC.
+Ustawienia bota na żywo są w `compose.yaml`: para `ARBIBOT_LIVE_PAIR` (domyślnie TIA/USDC), transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą `ARBIBOT_MAKER_MIN_BPS` (domyślnie 20 bp), dzienny limit straty 2 USDC.
 
 Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje monetę pary za USDC na giełdzie, gdzie stanowi mniej niż połowę wartości, jeśli brakuje co najmniej ćwierci transakcji (10 USDC). Inne monety na kontach (np. STRK) zostają nietknięte. Każdy zakup i salda obu giełd przy starcie idą na Telegram. Transakcja zmniejsza się do dostępnych środków, najmniej do ćwierci `--size`.
 
