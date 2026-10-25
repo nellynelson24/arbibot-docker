@@ -145,6 +145,14 @@ pub async fn dry_run(args: Args) -> Result<()> {
     run(args, None).await
 }
 
+fn amount(x: f64, decimals: usize) -> String {
+    let text = format!("{x:.decimals$}");
+    match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_owned(),
+        _ => text,
+    }
+}
+
 fn http() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -307,6 +315,7 @@ impl Engine {
             "restore_min_bps": args.restore_min_bps,
             "skew_bps": args.skew_bps,
             "lazy_rebalance": args.lazy_rebalance,
+            "rebalance_max_cost_bps": args.rebalance_max_cost_bps,
             "auto_transfer": self.auto.is_some(),
             "maker": args.maker,
             "maker_min_bps": args.maker_min_bps,
@@ -325,9 +334,9 @@ impl Engine {
         );
         for (venue, w) in VENUES.iter().zip(self.inventory.wallets) {
             started += &format!(
-                " {}: {:.4} {} i {:.2} {}.",
+                " {}: {} {} i {:.2} {}.",
                 venue.name(),
-                w.base,
+                amount(w.base, 4),
                 self.market.base,
                 w.quote,
                 self.market.quote
@@ -462,4 +471,17 @@ fn clock() -> String {
     DateTime::from_timestamp_millis(now_ms() as i64)
         .map(|t| t.format("%H:%M:%S UTC").to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn amounts_never_show_negative_zero() {
+        assert_eq!(amount(-0.0, 4), "0.0000");
+        assert_eq!(amount(-0.00001, 4), "0.0000");
+        assert_eq!(amount(-1.5, 2), "-1.50");
+        assert_eq!(amount(151.70371, 4), "151.7037");
+    }
 }

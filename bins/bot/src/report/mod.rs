@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde_json::Value;
 use tokio::time::sleep;
+use venues::{Book, Venue};
 
 use crate::ledger::now_ms;
 use crate::telegram::Telegram;
@@ -56,7 +57,13 @@ pub async fn run(args: Args) -> Result<()> {
         return daily(args).await;
     }
     let until = now_ms();
-    let report = build(&args.data_dir, until - args.hours * HOUR_MS, until)?;
+    let books = books().await;
+    let report = build(
+        &args.data_dir,
+        until - args.hours * HOUR_MS,
+        until,
+        books.as_ref(),
+    )?;
     let path = save(&args.data_dir, &report, until)?;
     println!("{}\nZapisano: {}", report.full, path.display());
     if args.telegram {
@@ -74,7 +81,13 @@ async fn daily(args: Args) -> Result<()> {
     loop {
         let now = now_ms();
         if let Some(marker) = daily_due(&args.data_dir, now) {
-            match build(&args.data_dir, now - args.hours * HOUR_MS, now) {
+            let books = books().await;
+            match build(
+                &args.data_dir,
+                now - args.hours * HOUR_MS,
+                now,
+                books.as_ref(),
+            ) {
                 Ok(report) => {
                     let path = save(&args.data_dir, &report, now)?;
                     if let Some(telegram) = &telegram {
@@ -87,6 +100,23 @@ async fn daily(args: Args) -> Result<()> {
             fs::write(&marker, "").with_context(|| format!("zapis {}", marker.display()))?;
         }
         sleep(DAILY_CHECK).await;
+    }
+}
+
+async fn books() -> Option<[Book; 2]> {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    match tokio::try_join!(
+        Venue::Okx.fetch_quotes(&http),
+        Venue::Bybit.fetch_quotes(&http)
+    ) {
+        Ok((okx, bybit)) => Some([okx, bybit]),
+        Err(e) => {
+            println!("Notowania giełd niedostępne, raport bez filtrów płynności: {e:#}");
+            None
+        }
     }
 }
 
@@ -115,6 +145,7 @@ struct Run {
     label: String,
     live: bool,
     start: Option<Value>,
+    prior_start: Option<Value>,
     rows: Vec<Value>,
 }
 
@@ -168,6 +199,17 @@ impl Run {
         if s["maker"] == true {
             parts.push(format!("maker {}", num(s, "maker_min_bps")));
         }
+        if s["trade_rebalance"] == true {
+            let cost = s["rebalance_max_cost_bps"].as_f64().unwrap_or(45.0);
+            parts.push(match (s["lazy_rebalance"] == true, cost) {
+                (_, c) if c <= 0.0 => "bez płatnego rebalansu".to_owned(),
+                (true, c) => format!("leniwy rebalans ≤ {c} bp"),
+                (false, c) => format!("rebalans ≤ {c} bp"),
+            });
+        }
+        if num(s, "skew_bps") > 0.0 {
+            parts.push(format!("przechył {}", num(s, "skew_bps")));
+        }
         if let Some(latency) = s["latency_ms"].as_array()
             && !self.live
         {
@@ -216,7 +258,7 @@ fn executed(trade: &Value) -> bool {
     text(trade, "outcome") != "brak wypełnienia"
 }
 
-pub fn build(data_dir: &Path, since: f64, until: f64) -> Result<Report> {
+pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 2]>) -> Result<Report> {
     let runs: Vec<Run> = sources(data_dir)
         .into_iter()
         .filter_map(|(label, dir, live)| load(label, &dir, live, since, until))
@@ -263,7 +305,7 @@ pub fn build(data_dir: &Path, since: f64, until: f64) -> Result<Report> {
         }
     }
     market_section(
-        data_dir,
+        (data_dir, books),
         live.or(runs.first()),
         &runs,
         (since, until),
@@ -321,6 +363,7 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
         .collect();
     files.sort();
     let mut start = None;
+    let mut prior_start = None;
     let mut rows = Vec::new();
     for file in files {
         let Ok(content) = fs::read_to_string(&file) else {
@@ -336,6 +379,9 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
             }
             if v["type"] == "start" {
                 start = Some(v.clone());
+                if t < since {
+                    prior_start = Some(v.clone());
+                }
             }
             if t >= since {
                 rows.push(v);
@@ -346,6 +392,7 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
         label,
         live,
         start,
+        prior_start,
         rows,
     })
 }

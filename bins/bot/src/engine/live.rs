@@ -7,7 +7,9 @@ use tokio::time::interval;
 use venues::Venue;
 
 use super::orders::floor_to;
-use super::{Accounts, Engine, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, http, run};
+use super::{
+    Accounts, Engine, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, amount, http, run,
+};
 use crate::inventory::Wallet;
 use crate::paper::Side;
 
@@ -145,9 +147,9 @@ impl Engine {
         for v in 0..2 {
             let w = self.inventory.wallets[v];
             println!(
-                "  {:<9} {:.4} {base} (≈{:.2} {quote}) i {:.2} {quote}",
+                "  {:<9} {} {base} (≈{:.2} {quote}) i {:.2} {quote}",
                 VENUES[v].name(),
-                w.base,
+                amount(w.base, 4),
                 w.base * mid,
                 w.quote
             );

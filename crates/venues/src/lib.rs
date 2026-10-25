@@ -10,6 +10,7 @@ pub struct Quote {
     pub bid_qty: Option<f64>,
     pub ask: f64,
     pub ask_qty: Option<f64>,
+    pub volume: Option<f64>,
 }
 
 pub type Book = HashMap<(String, String), Quote>;
@@ -96,6 +97,7 @@ impl Venue {
                             &t["askPx"],
                             &t["askSz"],
                         )
+                        .map(|(k, q)| (k, with_volume(q, &t["volCcy24h"])))
                     })
                     .collect()
             }
@@ -129,6 +131,7 @@ impl Venue {
                             &t["ask1Price"],
                             &t["ask1Size"],
                         )
+                        .map(|(k, q)| (k, with_volume(q, &t["turnover24h"])))
                     })
                     .collect()
             }
@@ -227,8 +230,16 @@ fn market(
             bid_qty: num(bid_qty),
             ask: num(ask)?,
             ask_qty: num(ask_qty),
+            volume: None,
         },
     ))
+}
+
+fn with_volume(quote: Quote, volume: &Value) -> Quote {
+    Quote {
+        volume: num(volume),
+        ..quote
+    }
 }
 
 fn kraken_asset(code: &str) -> &str {

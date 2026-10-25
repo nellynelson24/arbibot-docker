@@ -31,69 +31,22 @@ services:
       interval: 1m
       start_period: 5m
 
+
   report:
     <<: *service
     command: bot report --daily --telegram
     secrets: [federbot-telegram]
 
+
   dry:
     <<: *dry
     command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
     healthcheck:
       test: find data/bot -name '*.jsonl' -mmin -3 | grep -q .
       interval: 1m
       start_period: 3m
-
-  ab-razem:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --trade-rebalance --data-dir data/ab-razem
-
-  ab-bez-rebalansu:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --restore-min-bps 40 --data-dir data/ab-bez-rebalansu
-
-  ab-p35:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 35
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-p35
-
-  ab-p50:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 50
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-p50
-
-  ab-m10:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 10 --sequential --trade-rebalance --data-dir data/ab-m10
-
-  ab-m30:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 30 --sequential --trade-rebalance --data-dir data/ab-m30
-
-  ab-szybki:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance
-      --okx-latency-ms 40 --bybit-latency-ms 100 --data-dir data/ab-szybki
-
-  ab-strk:
-    <<: *dry
-    command: >-
-      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-strk
 
   ab-arb:
     <<: *dry
@@ -101,11 +54,41 @@ services:
       bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-arb
 
+
   ab-arb-m30:
     <<: *dry
     command: >-
       bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 30 --sequential --trade-rebalance --data-dir data/ab-arb-m30
+
+
+  ab-arb-tani:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --data-dir data/ab-arb-tani
+
+  ab-arb-bez:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --rebalance-max-cost-bps 0
+      --data-dir data/ab-arb-bez
+
+  ab-arb-skew:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --skew-bps 15 --data-dir data/ab-arb-skew
+
+  ab-strk:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-strk
+
 
   ab-s:
     <<: *dry
@@ -113,30 +96,12 @@ services:
       bot dry-run --pair S/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --data-dir data/ab-s
 
-  ab-skew:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --skew-bps 15 --data-dir data/ab-skew
-
-  ab-leniwy:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance --rebalance-max-cost-bps 40 --data-dir data/ab-leniwy
-
-  ab-skew-leniwy:
-    <<: *dry
-    command: >-
-      bot dry-run --pair TIA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --skew-bps 15 --lazy-rebalance
-      --rebalance-max-cost-bps 40 --data-dir data/ab-skew-leniwy
 
   live:
     <<: *service
     profiles: [live]
     command: >-
-      bot live --pair ${ARBIBOT_LIVE_PAIR:-TIA/USDC} --size 40 --min-bps 40
+      bot live --pair ${ARBIBOT_LIVE_PAIR:-ARB/USDC} --size 40 --min-bps 40
       --maker --maker-size 10 --maker-min-bps ${ARBIBOT_MAKER_MIN_BPS:-20} --sequential --trade-rebalance
       --telegram --yes ${ARBIBOT_LIVE_FLAGS:-}
     secrets:

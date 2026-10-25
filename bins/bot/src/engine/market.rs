@@ -123,7 +123,13 @@ pub(super) async fn picks(
         return Ok((ranked, None));
     }
 
-    let prices = Venue::Okx.fetch_quotes(http).await.context("ceny OKX")?;
+    let books = tokio::try_join!(
+        Venue::Okx.fetch_quotes(http),
+        Venue::Bybit.fetch_quotes(http)
+    )
+    .context("ceny giełd")?;
+    let books = [books.0, books.1];
+    let prices = &books[0];
     println!(
         "Selektor (ostatnie {REVIEW_DAYS} dni, okazje ≥ {min_bps} bp po prowizjach {fee_bps:.0} bp, \
          transakcja {size}; limit rebalansu {route_limit:.2}):"
@@ -136,6 +142,10 @@ pub(super) async fn picks(
             "  {:<12} okazji {:4} (kup na OKX {}, na Bybit {}), szacunek {:.4}",
             c.pair, c.gaps, c.buy_okx, c.buy_bybit, c.profit
         );
+        if let Some(reason) = selector::liquidity_issue(&c.pair, &books) {
+            println!("{found} — pomijam: {reason}");
+            continue;
+        }
         let quote_fee = match quote_routes.get(&quote) {
             Some(r) => *r,
             None => {

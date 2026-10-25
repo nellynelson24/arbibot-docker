@@ -34,10 +34,17 @@ pub(super) fn live_section(
         done.len(),
         mean_bps
     );
-    if let (Some(first), Some(last)) = (statuses.first(), statuses.last()) {
+    let changed = pair_since(run.prior_start.as_ref(), &run.of("start"));
+    let since_pair = changed.unwrap_or(f64::MIN);
+    let equity: Vec<&&Value> = statuses.iter().filter(|s| ts(s) >= since_pair).collect();
+    if let (Some(first), Some(last)) = (equity.first(), equity.last()) {
         let _ = writeln!(
             full,
-            "- Kapitał widziany przez bota: {:.2} → {:.2} USDC (bez przelewów w drodze; różnica poza arbitrażem to kurs i przelewy)",
+            "- Kapitał widziany przez bota{}: {:.2} → {:.2} USDC (bez przelewów w drodze; różnica poza arbitrażem to kurs i przelewy)",
+            changed.map_or_else(String::new, |t| format!(
+                " od zmiany pary ({})",
+                pl_time(t, "%d.%m %H:%M")
+            )),
             num(first, "equity"),
             num(last, "equity")
         );
@@ -138,7 +145,7 @@ pub(super) fn live_section(
         let _ = writeln!(full, "| {venue} {side} | {whole} | {part} | {none} |");
     }
 
-    let since_start = run.of("start").last().map_or(0.0, |s| ts(s));
+    let since_start = run.start.as_ref().map_or(0.0, ts);
     let mut acks: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     for row in run.rows.iter().filter(|r| ts(r) >= since_start) {
         for o in row["orders"].as_array().into_iter().flatten() {
@@ -183,7 +190,7 @@ pub(super) fn live_section(
             let slow = if venue == "okx" { 150.0 } else { 350.0 };
             if xs.len() >= 3 && pct(xs, 50.0) > slow {
                 advice.push(format!(
-                    "Zlecenia na {venue} potwierdzane wolno (mediana {:.0} ms): sprawdź sieć (kabel zamiast Wi-Fi) albo rozważ serwer bliżej giełd.",
+                    "Zlecenia na {venue} potwierdzane wolno (mediana {:.0} ms): sprawdź łącze serwera albo rozważ serwer bliżej giełd.",
                     pct(xs, 50.0)
                 ));
             }
@@ -250,4 +257,59 @@ pub(super) fn live_section(
         ));
     }
     let _ = writeln!(full);
+}
+
+fn pair_since(prior: Option<&Value>, starts: &[&Value]) -> Option<f64> {
+    let mut previous = prior.map(|p| &p["pair"]);
+    let mut since = None;
+    for s in starts {
+        if previous.is_some_and(|p| *p != s["pair"]) {
+            since = Some(ts(s));
+        }
+        previous = Some(&s["pair"]);
+    }
+    since
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn capital_is_compared_from_the_last_pair_change() {
+        let start = |t: f64, pair: &str| json!({"type": "start", "ts_ms": t, "pair": pair});
+        let (tia, arb, arb2) = (
+            start(10.0, "TIA/USDC"),
+            start(20.0, "ARB/USDC"),
+            start(30.0, "ARB/USDC"),
+        );
+        assert_eq!(pair_since(Some(&tia), &[&arb, &arb2]), Some(20.0));
+        assert_eq!(pair_since(None, &[&tia, &arb, &arb2]), Some(20.0));
+        assert_eq!(pair_since(Some(&arb), &[&arb2]), None);
+        assert_eq!(pair_since(None, &[]), None);
+    }
+
+    #[test]
+    fn latency_header_uses_the_last_start_before_the_window() {
+        let run = Run {
+            label: "na żywo".to_owned(),
+            live: true,
+            start: Some(
+                json!({"type": "start", "ts_ms": 1_792_600_000_000.0_f64, "pair": "ARB/USDC"}),
+            ),
+            prior_start: None,
+            rows: vec![
+                json!({"type": "maker_hedge", "ts_ms": 1_792_800_000_000.0_f64, "pnl": 0.02,
+                "orders": [{"venue": "bybit", "ack_ms": 190.0}]}),
+            ],
+        };
+        let (mut full, mut short, mut advice) = (String::new(), String::new(), Vec::new());
+        live_section(&run, &mut full, &mut short, &mut advice);
+        assert!(full.contains(&format!(
+            "Od ostatniego startu ({})",
+            pl_time(1_792_600_000_000.0, "%d.%m %H:%M")
+        )));
+        assert!(!full.contains("01.01"));
+    }
 }

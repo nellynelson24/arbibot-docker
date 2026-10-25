@@ -4,10 +4,11 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::Value;
+use venues::Book;
 
 use super::stats::pl_hour;
 use super::{MIN_CASES, Run, executed, num, text};
-use crate::selector::utc_date;
+use crate::selector::{MAX_GAP_BPS, MAX_SPREAD_BPS, MIN_VOLUME_USD, liquidity_issue, utc_date};
 
 const MIN_OFFER: f64 = 5.0;
 
@@ -16,7 +17,7 @@ fn quote(pair: &str) -> &str {
 }
 
 pub(super) fn market_section(
-    data_dir: &Path,
+    (data_dir, books): (&Path, Option<&[Book; 2]>),
     run: Option<&Run>,
     runs: &[Run],
     (since, until): (f64, f64),
@@ -107,6 +108,18 @@ pub(super) fn market_section(
     }
     let mut ranked: Vec<(&String, &(usize, f64))> = per_pair.iter().collect();
     ranked.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+    let rejected: Vec<(String, String)> = books.map_or_else(Vec::new, |b| {
+        ranked
+            .iter()
+            .filter_map(|(p, _)| liquidity_issue(p, b).map(|r| ((*p).clone(), r)))
+            .collect()
+    });
+    ranked.retain(|(p, _)| rejected.iter().all(|(r, _)| r != *p));
+    if let Some((_, reason)) = rejected.iter().find(|(p, _)| *p == pair) {
+        advice.push(format!(
+            "Para {pair} nie przechodzi filtrów płynności ({reason}): rozważ inną parę."
+        ));
+    }
     let _ = writeln!(
         full,
         "\n| Para | okazje | szacunek USDC (szczyty luk, bez przelewów) |\n|---|---|---|"
@@ -115,6 +128,28 @@ pub(super) fn market_section(
         let _ = writeln!(full, "| {p} | {n} | {profit:+.3} |");
     }
     let _ = writeln!(full);
+    match books {
+        Some(_) if !rejected.is_empty() => {
+            let _ = writeln!(
+                full,
+                "Pominięte przez filtry płynności (obrót 24 h ≥ {:.0} tys. USD i spread ≤ {MAX_SPREAD_BPS} bp na obu giełdach, różnica cen ≤ {MAX_GAP_BPS} bp): {}\n",
+                MIN_VOLUME_USD / 1e3,
+                rejected
+                    .iter()
+                    .take(8)
+                    .map(|(p, r)| format!("{p} ({r})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        Some(_) => {}
+        None => {
+            let _ = writeln!(
+                full,
+                "Bez filtrów płynności: notowania giełd były niedostępne.\n"
+            );
+        }
+    }
     let same_quote: Vec<String> = ranked
         .iter()
         .filter(|(p, _)| quote(p) == quote(&pair))

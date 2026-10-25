@@ -109,7 +109,7 @@ impl Engine {
         self.last_report = Some(day);
         let (data_dir, tx) = (self.data_dir.clone(), telegram.sender());
         tokio::task::spawn_blocking(move || {
-            let text = match report::build(&data_dir, now - DAY_MS, now) {
+            let text = match report::build(&data_dir, now - DAY_MS, now, None) {
                 Ok(r) => {
                     let _ = report::save(&data_dir, &r, now);
                     let _ = std::fs::write(&sent, "");

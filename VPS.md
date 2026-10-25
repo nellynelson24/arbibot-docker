@@ -45,7 +45,7 @@ Salda wyrównuje handel. Automatyczne przelewy włącza `ARBIBOT_LIVE_FLAGS=--au
    | `ARBIBOT_DATA` | `/opt/arbibot/data` |
    | `ARBIBOT_SECRETS` | `/opt/arbibot/secrets` |
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |
-   | `ARBIBOT_LIVE_PAIR` | para bota na żywo, domyślnie `TIA/USDC` |
+   | `ARBIBOT_LIVE_PAIR` | para bota na żywo, domyślnie `ARB/USDC` |
    | `ARBIBOT_MAKER_MIN_BPS` | marża makera na żywo w bp, domyślnie `20` |
    | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze (kupuje brakującą monetę pary, innych nie sprzedaje), potem puste |
 
