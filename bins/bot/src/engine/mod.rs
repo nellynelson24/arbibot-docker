@@ -319,6 +319,7 @@ impl Engine {
             "auto_transfer": self.auto.is_some(),
             "maker": args.maker,
             "maker_min_bps": args.maker_min_bps,
+            "maker_size": args.maker_size.unwrap_or(args.size),
             "latency_ms": [args.okx_latency_ms, args.bybit_latency_ms],
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
         }))?;

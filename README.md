@@ -28,6 +28,8 @@ Warianty na sucho (`dry` i `ab-*`) różnią się od głównego (ARB/USDC, leniw
 
 Raport poleca tylko pary, które przechodzą filtry płynności na obu giełdach: obrót 24 h co najmniej 250 tys. USD, spread najwyżej 30 bp i różnica cen między giełdami najwyżej 100 bp (notowania z chwili raportu). Te same filtry stosuje wybór pary bez `--pair`.
 
+Skaner symuluje makera (zlecenie na OKX z marżą 20 bp, zabezpieczenie na Bybit) na wszystkich parach. Raport układa pary po filtrach płynności według szacowanego zysku makera na dobę, porównuje symulację obecnej pary z wynikiem na żywo i radzi zmianę pary, gdy przewaga zwraca koszt zmiany (~0,4 USDC) w tydzień.
+
 ## Dane rynkowe
 
 - Świeżość: ping co 2 s na obu giełdach; dane są świeże, gdy pong doszedł najpóźniej 3 s temu, a książka jest zgodna. Bez świeżości obu giełd nie ma sygnałów takera, a zlecenia maker są wycofywane.

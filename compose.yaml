@@ -25,7 +25,7 @@ x-dry: &dry
 services:
   scanner:
     <<: *service
-    command: scanner run --quotes EUR,USDC,PLN
+    command: scanner run --quotes EUR,USDC,PLN --maker-min-bps 20
     healthcheck:
       test: find data/opportunities -name '*.jsonl' -mmin -10 | grep -q .
       interval: 1m

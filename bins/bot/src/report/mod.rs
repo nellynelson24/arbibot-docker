@@ -1,5 +1,6 @@
 mod compare;
 mod live;
+mod makers;
 mod market;
 mod stats;
 mod strategy;
@@ -20,6 +21,7 @@ use crate::ledger::now_ms;
 use crate::telegram::Telegram;
 use compare::{agreement_section, variants_section};
 use live::live_section;
+use makers::scanner_maker_section;
 use market::market_section;
 use stats::{pl_hour, pl_time};
 use strategy::{calibration_section, maker_section};
@@ -311,6 +313,13 @@ pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 2]>)
         (since, until),
         &mut full,
         &mut short,
+        &mut advice,
+    );
+    scanner_maker_section(
+        (data_dir, books),
+        live.or(runs.first()),
+        (since, until),
+        &mut full,
         &mut advice,
     );
 
