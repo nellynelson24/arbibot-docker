@@ -83,6 +83,13 @@ services:
       --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
       --skew-bps 15 --data-dir data/ab-arb-skew
 
+  ab-arb-maker20:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --data-dir data/ab-arb-maker20
+
   ab-strk:
     <<: *dry
     command: >-
@@ -101,8 +108,9 @@ services:
     <<: *service
     profiles: [live]
     command: >-
-      bot live --pair ${ARBIBOT_LIVE_PAIR:-ARB/USDC} --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps ${ARBIBOT_MAKER_MIN_BPS:-20} --sequential --trade-rebalance
+      bot live --pair ${ARBIBOT_LIVE_PAIR:-ARB/USDC} --size ${ARBIBOT_SIZE:-40} --min-bps 40
+      --maker --maker-size ${ARBIBOT_MAKER_SIZE:-10} --maker-min-bps ${ARBIBOT_MAKER_MIN_BPS:-20}
+      --daily-loss-limit ${ARBIBOT_DAILY_LOSS:-2} --sequential --trade-rebalance
       --telegram --yes ${ARBIBOT_LIVE_FLAGS:-}
     secrets:
       - federbot-okx-read

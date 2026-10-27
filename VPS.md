@@ -47,6 +47,9 @@ Salda wyrównuje handel. Automatyczne przelewy włącza `ARBIBOT_LIVE_FLAGS=--au
    | `COMPOSE_PROFILES` | `live`, gdy ma działać bot na żywo |
    | `ARBIBOT_LIVE_PAIR` | para bota na żywo, domyślnie `ARB/USDC` |
    | `ARBIBOT_MAKER_MIN_BPS` | marża makera na żywo w bp, domyślnie `20` |
+   | `ARBIBOT_SIZE` | transakcja takera na żywo (USDC), domyślnie `40`, najwyżej `50` |
+   | `ARBIBOT_MAKER_SIZE` | zlecenie maker na żywo (USDC), domyślnie `10`, najwyżej `50` |
+   | `ARBIBOT_DAILY_LOSS` | dzienny limit straty na żywo (USDC), domyślnie `2` |
    | `ARBIBOT_LIVE_FLAGS` | `--buy-inventory` tylko przy pierwszym starcie na nowej parze (kupuje brakującą monetę pary, innych nie sprzedaje), potem puste |
 
    Bez Portainera: te same zmienne w pliku `.env` obok `compose.yaml`, potem `docker compose pull && docker compose up -d`.

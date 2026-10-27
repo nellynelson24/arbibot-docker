@@ -11,7 +11,7 @@ docker compose --profile live up -d live   # bot na żywo
 docker compose logs -f live
 ```
 
-Ustawienia bota na żywo są w `compose.yaml`: para `ARBIBOT_LIVE_PAIR` (domyślnie ARB/USDC), transakcja do 40 USDC, próg 40 bp, maker na OKX po 10 USDC z marżą `ARBIBOT_MAKER_MIN_BPS` (domyślnie 20 bp), dzienny limit straty 2 USDC.
+Ustawienia bota na żywo są w `compose.yaml`: para `ARBIBOT_LIVE_PAIR` (domyślnie ARB/USDC), transakcja do `ARBIBOT_SIZE` (domyślnie 40 USDC), próg 40 bp, maker na OKX po `ARBIBOT_MAKER_SIZE` (domyślnie 10 USDC) z marżą `ARBIBOT_MAKER_MIN_BPS` (domyślnie 20 bp), dzienny limit straty `ARBIBOT_DAILY_LOSS` (domyślnie 2 USDC).
 
 Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje monetę pary za USDC na giełdzie, gdzie stanowi mniej niż połowę wartości, jeśli brakuje co najmniej ćwierci transakcji (10 USDC). Inne monety na kontach (np. STRK) zostają nietknięte. Każdy zakup i salda obu giełd przy starcie idą na Telegram. Transakcja zmniejsza się do dostępnych środków, najmniej do ćwierci `--size`.
 
@@ -24,7 +24,7 @@ Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje 
 - `--lazy-rebalance` (opcja, A/B na sucho): płatny rebalans handlem tylko po sygnale straconym z braku środków, najwyżej raz na 30 min i 4 razy na dobę.
 - `--auto-transfer` (domyślnie wyłączone): przelewy monety i USDC między giełdami z giełdy, której klucz ma prawo wypłat (Bybit EU go nie daje), tylko na adresy wpłat własnych kont; opis w [VPS.md](VPS.md).
 
-Warianty na sucho (`dry` i `ab-*`) różnią się od głównego (ARB/USDC, leniwy rebalans) jednym ustawieniem: `ab-arb` rebalans nie leniwy, `ab-arb-m30` marża makera 30 bp, `ab-arb-tani` rebalans tylko do 30 bp, `ab-arb-bez` bez płatnego rebalansu, `ab-arb-skew` przechył 15 bp, `ab-strk` i `ab-s` inna para. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
+Warianty na sucho (`dry` i `ab-*`) różnią się od głównego (ARB/USDC, leniwy rebalans) jednym ustawieniem: `ab-arb` rebalans nie leniwy, `ab-arb-m30` marża makera 30 bp, `ab-arb-tani` rebalans tylko do 30 bp, `ab-arb-bez` bez płatnego rebalansu, `ab-arb-skew` przechył 15 bp, `ab-arb-maker20` zlecenie maker 20 USDC, `ab-strk` i `ab-s` inna para. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
 Raport poleca tylko pary, które przechodzą filtry płynności na obu giełdach: obrót 24 h co najmniej 250 tys. USD, spread najwyżej 30 bp i różnica cen między giełdami najwyżej 100 bp (notowania z chwili raportu). Te same filtry stosuje wybór pary bez `--pair`.
 
