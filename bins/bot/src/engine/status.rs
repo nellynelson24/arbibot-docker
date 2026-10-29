@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::rebalance::trade_rebalance_need;
-use super::{Engine, SIZE_MARGIN, VENUES, clock};
+use super::{Engine, SIZE_MARGIN, VENUES, amount, clock};
+use crate::inventory::Wallet;
 use crate::ledger::now_ms;
 use crate::{report, selector};
 
@@ -86,6 +87,7 @@ impl Engine {
             self.day_pnl = 0.0;
             self.day_trades = 0;
             self.day_rebalances = 0;
+            self.day_failed_hedges = 0;
         }
         self.daily_report(now);
         self.inventory.settle();
@@ -127,29 +129,40 @@ impl Engine {
         };
         let equity = self.inventory.equity(mid);
         let mut blocked = String::new();
+        let mut key = String::new();
         if self.live.is_some() {
-            let w = &self.inventory.wallets;
+            let w = self.inventory.wallets;
             let min_trade = self.min_trade();
-            let short = self
+            let need = self
                 .rooms()
-                .and_then(|room| trade_rebalance_need(room, self.size, min_trade))
-                .map(|(short, _)| short);
+                .and_then(|room| trade_rebalance_need(room, self.size, min_trade));
+            let cost = need
+                .and_then(|(short, amount)| self.plan_sized(1 - short, amount))
+                .map(|plan| -plan.expected_bps);
             for d in 0..2 {
                 if w[d].quote < min_trade * (1.0 + SIZE_MARGIN) || w[1 - d].base * mid < min_trade {
+                    let can = need.is_some_and(|(short, _)| short == d);
                     blocked += &format!(
                         " | brak środków na kup {} → sprzedaj {} ({})",
                         VENUES[d].name(),
                         VENUES[1 - d].name(),
-                        blocked_hint(self.trade_rebalance, self.lazy_rebalance, short == Some(d))
+                        blocked_hint(
+                            self.trade_rebalance,
+                            self.lazy_rebalance,
+                            can.then_some(cost).flatten(),
+                            can,
+                            self.rebalance_max_cost_bps
+                        )
                     );
+                    key += &format!("{d}{can} ");
                 }
             }
         }
-        if blocked != self.last_blocked {
+        if key != self.last_blocked {
             if !blocked.is_empty() {
                 self.tell(blocked.trim_start_matches(" | ").replace(" | ", "\n"));
             }
-            self.last_blocked = blocked.clone();
+            self.last_blocked = key;
         }
         let s = &self.stats;
         let mut extra = String::new();
@@ -190,10 +203,15 @@ impl Engine {
         println!("[{}] {line}", clock());
         if let Some(telegram) = &self.telegram {
             telegram.set_status(format!(
-                "{} {}/{}: {line}",
+                "{} {}/{}: {line}\n{}",
                 clock(),
                 self.market.base,
-                self.market.quote
+                self.market.quote,
+                balances(
+                    &self.inventory.wallets,
+                    &self.market.base,
+                    &self.market.quote
+                )
             ));
         }
         self.ledger.write(json!({
@@ -249,12 +267,46 @@ impl Engine {
     }
 }
 
-fn blocked_hint(trade_rebalance: bool, lazy: bool, can_rebalance: bool) -> &'static str {
-    match (trade_rebalance && can_rebalance, lazy) {
-        (true, false) => "bot wyrówna salda handlem po 15 min",
-        (true, true) => "bot wyrówna salda handlem po straconym sygnale",
-        (false, _) => "za mało środków na rebalans handlem — przelej ręcznie",
+fn blocked_hint(
+    trade_rebalance: bool,
+    lazy: bool,
+    cost: Option<f64>,
+    can_rebalance: bool,
+    limit: f64,
+) -> String {
+    if !(trade_rebalance && can_rebalance) {
+        return "za mało środków na rebalans handlem — przelej ręcznie".to_owned();
     }
+    match cost {
+        Some(c) if c > limit => format!(
+            "rebalans handlem teraz za drogi: {c:.0} bp przy limicie {limit:.0} — salda wyrówna maker albo tańszy moment"
+        ),
+        _ => format!(
+            "bot wyrówna salda handlem {}{}",
+            if lazy {
+                "po straconym sygnale"
+            } else {
+                "po 15 min"
+            },
+            cost.map_or_else(String::new, |c| format!(" (koszt teraz {c:.0} bp)"))
+        ),
+    }
+}
+
+fn balances(wallets: &[Wallet; 2], base: &str, quote: &str) -> String {
+    let parts: Vec<String> = VENUES
+        .iter()
+        .zip(wallets)
+        .map(|(v, w)| {
+            format!(
+                "{}: {} {base} i {:.2} {quote}",
+                v.name(),
+                amount(w.base, 4),
+                w.quote
+            )
+        })
+        .collect();
+    format!("Salda: {}", parts.join(", "))
 }
 
 #[cfg(test)]
@@ -262,13 +314,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blocked_hint_asks_for_a_transfer_only_when_trading_cannot_rebalance() {
+    fn blocked_hint_says_whether_and_when_trading_rebalances() {
         assert_eq!(
-            blocked_hint(true, false, true),
+            blocked_hint(true, false, None, true, 45.0),
             "bot wyrówna salda handlem po 15 min"
         );
-        assert!(blocked_hint(true, true, true).contains("straconym sygnale"));
-        assert!(blocked_hint(true, false, false).contains("przelej ręcznie"));
-        assert!(blocked_hint(false, false, true).contains("przelej ręcznie"));
+        assert_eq!(
+            blocked_hint(true, true, Some(38.4), true, 45.0),
+            "bot wyrówna salda handlem po straconym sygnale (koszt teraz 38 bp)"
+        );
+        assert!(
+            blocked_hint(true, true, Some(84.6), true, 30.0)
+                .starts_with("rebalans handlem teraz za drogi: 85 bp przy limicie 30")
+        );
+        assert!(blocked_hint(true, false, None, false, 45.0).contains("przelej ręcznie"));
+        assert!(blocked_hint(false, false, Some(10.0), true, 45.0).contains("przelej ręcznie"));
+    }
+
+    #[test]
+    fn status_lists_balances_on_both_venues() {
+        let wallets = [
+            Wallet {
+                base: 592.196,
+                quote: 22.3612,
+            },
+            Wallet {
+                base: -0.00001,
+                quote: 80.93,
+            },
+        ];
+        assert_eq!(
+            balances(&wallets, "ARB", "USDC"),
+            format!(
+                "Salda: {}: 592.1960 ARB i 22.36 USDC, {}: 0.0000 ARB i 80.93 USDC",
+                VENUES[0].name(),
+                VENUES[1].name()
+            )
+        );
     }
 }

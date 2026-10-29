@@ -6,13 +6,14 @@ use serde_json::{Value, json};
 use super::maker_live::LiveMaker;
 use super::orders::{floor_to, side_id};
 use super::taker::books_fresh;
-use super::{BYBIT, Engine, OKX, clock};
+use super::{BYBIT, Engine, OKX, REMAINDER_SLIPPAGE, VENUES, clock};
 use crate::book::{Book, Trade};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
-use crate::paper::Side;
+use crate::paper::{Fill, Side};
 
 const HEDGE_SLIPPAGE: f64 = 0.005;
+const MAX_FAILED_HEDGES: u32 = 3;
 
 pub(super) struct Resting {
     pub(super) price: f64,
@@ -30,6 +31,7 @@ pub(super) struct Maker {
     last_quoted: [Option<Instant>; 2],
     pub(super) unhedged: [f64; 2],
     pub(super) unhedged_cash: [f64; 2],
+    filled_at: [Option<Instant>; 2],
     pub(super) live: Option<LiveMaker>,
 }
 
@@ -230,6 +232,7 @@ impl Engine {
             let i = index(side);
             maker.unhedged[i] += qty;
             maker.unhedged_cash[i] += cash;
+            maker.filled_at[i].get_or_insert_with(Instant::now);
         }
         self.stats.maker_fills += 1;
         let mut line = json!({
@@ -249,13 +252,15 @@ impl Engine {
         };
         let m = &self.market;
         let qty = floor_to(maker.unhedged[i], m.step);
+        let since_fill_ms = maker.filled_at[i].map(|t| t.elapsed().as_secs_f64() * 1e3);
         let hedge_side = opposite(side);
-        let top = {
+        let (top, book_age_ms) = {
             let book = self.books[BYBIT].borrow();
-            match hedge_side {
+            let top = match hedge_side {
                 Side::Buy => book.asks.first().map(|l| l.0),
                 Side::Sell => book.bids.first().map(|l| l.0),
-            }
+            };
+            (top, book.updated.map(|t| t.elapsed().as_secs_f64() * 1e3))
         };
         let Some(top) = top else {
             return Ok(());
@@ -267,8 +272,13 @@ impl Engine {
             Side::Buy => top * (1.0 + HEDGE_SLIPPAGE),
             Side::Sell => top * (1.0 - HEDGE_SLIPPAGE),
         };
+        let probe = json!({"top": top, "book_age_ms": book_age_ms, "since_fill_ms": since_fill_ms});
         let fill = match self.ioc(BYBIT, hedge_side, qty, limit).await {
             Ok(fill) => fill,
+            Err(e) if self.live.is_some() && may_flatten(&e, self.day_failed_hedges) => {
+                self.day_failed_hedges += 1;
+                return self.flatten(side, qty, format!("{e:#}"), probe).await;
+            }
             Err(e) if self.live.is_some() => {
                 self.halt(format!(
                     "błąd zabezpieczenia makera na Bybit ({e:#}) — sprawdź salda na giełdach"
@@ -280,15 +290,73 @@ impl Engine {
         };
         if fill.qty <= 0.0 {
             self.stats.hedge_misses += 1;
-            return Ok(());
+            let mut miss = probe;
+            miss["type"] = json!("hedge_miss");
+            miss["side"] = json!(side_id(side));
+            miss["qty"] = json!(qty);
+            miss["orders"] = json!(self.take_orders());
+            return self.ledger.write(miss);
         }
-        let fee = self.market.fees[BYBIT].taker;
-        let cash = self.inventory.wallets[BYBIT].book(hedge_side, fill.qty, fill.value(), fee);
+        self.book_hedge(side, BYBIT, qty, fill, probe).await
+    }
+
+    async fn flatten(&mut self, side: Side, qty: f64, reason: String, probe: Value) -> Result<()> {
+        let close = opposite(side);
+        let limit = {
+            let book = self.books[OKX].borrow();
+            match close {
+                Side::Sell => book.bids.first().map(|l| l.0 * (1.0 - REMAINDER_SLIPPAGE)),
+                Side::Buy => book.asks.first().map(|l| l.0 * (1.0 + REMAINDER_SLIPPAGE)),
+            }
+        };
+        let line = format!(
+            "maker: zabezpieczenie na Bybit EU odrzucone ({reason}) — domykam {qty} {} na OKX EEA",
+            self.market.base
+        );
+        println!("[{}] {line}", clock());
+        self.tell(line);
+        let fill = match limit {
+            Some(limit) => self.ioc(OKX, close, qty, limit).await,
+            None => Err(anyhow::anyhow!("brak ceny na OKX EEA")),
+        };
+        match fill {
+            Ok(fill) if fill.qty > 0.0 => {
+                let mut probe = probe;
+                probe["flatten"] = json!(reason);
+                self.book_hedge(side, OKX, qty, fill, probe).await
+            }
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.halt(format!(
+                    "zabezpieczenie makera odrzucone na Bybit ({reason}), a domknięcie na OKX nieudane ({e:#}) — sprawdź salda na giełdach"
+                ))?;
+                self.last_tick_ms = now_ms();
+                self.resync().await
+            }
+        }
+    }
+
+    async fn book_hedge(
+        &mut self,
+        side: Side,
+        venue: usize,
+        qty: f64,
+        fill: Fill,
+        mut detail: Value,
+    ) -> Result<()> {
+        let i = index(side);
+        let close = opposite(side);
+        let fee = self.market.fees[venue].taker;
+        let cash = self.inventory.wallets[venue].book(close, fill.qty, fill.value(), fee);
+        let step = self.market.step;
         let maker = self.maker.as_mut().expect("checked above");
         let share = (fill.qty / maker.unhedged[i]).min(1.0);
         let maker_cash = maker.unhedged_cash[i] * share;
         maker.unhedged[i] -= fill.qty;
         maker.unhedged_cash[i] -= maker_cash;
+        if maker.unhedged[i] < step / 2.0 {
+            maker.filled_at[i] = None;
+        }
         let pnl = maker_cash + cash;
         if fill.qty < qty {
             self.stats.hedge_misses += 1;
@@ -300,13 +368,19 @@ impl Engine {
         self.day_trades += 1;
         let notional = maker_cash.abs();
         let line = format!(
-            "maker: {} {:.4} {} na OKX EEA, zabezpieczenie na Bybit EU po {:.6}: wynik {:+.4} {} ({:+.1} bp)",
+            "maker: {} {:.4} {} na OKX EEA, {} na {} po {:.6}: wynik {:+.4} {} ({:+.1} bp)",
             match side {
                 Side::Buy => "kupno",
                 Side::Sell => "sprzedaż",
             },
             fill.qty,
             self.market.base,
+            if venue == OKX {
+                "domknięcie"
+            } else {
+                "zabezpieczenie"
+            },
+            VENUES[venue].name(),
             fill.avg_price,
             pnl,
             self.market.quote,
@@ -316,16 +390,15 @@ impl Engine {
         if self.live.is_some() {
             self.tell(line);
         }
-        self.ledger.write(json!({
-            "type": "maker_hedge",
-            "side": side_id(side),
-            "qty": fill.qty,
-            "hedge_price": fill.avg_price,
-            "pnl": pnl,
-            "pnl_bps": pnl / notional * 1e4,
-            "missed": qty - fill.qty,
-            "orders": self.take_orders(),
-        }))?;
+        detail["type"] = json!("maker_hedge");
+        detail["side"] = json!(side_id(side));
+        detail["qty"] = json!(fill.qty);
+        detail["hedge_price"] = json!(fill.avg_price);
+        detail["pnl"] = json!(pnl);
+        detail["pnl_bps"] = json!(pnl / notional * 1e4);
+        detail["missed"] = json!(qty - fill.qty);
+        detail["orders"] = json!(self.take_orders());
+        self.ledger.write(detail)?;
         if self.live.is_some() {
             self.resync().await?;
         }
@@ -352,6 +425,10 @@ fn match_trade(quote: &mut Resting, side: Side, price: f64, qty: f64) -> f64 {
     let filled = reaching.min(quote.qty);
     quote.qty -= filled;
     filled
+}
+
+fn may_flatten(e: &anyhow::Error, failed_today: u32) -> bool {
+    account::rejected(e) && failed_today < MAX_FAILED_HEDGES
 }
 
 pub(super) fn reserve(
@@ -381,6 +458,15 @@ pub(super) fn reserve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_refused_hedges_are_flattened_and_only_a_few_times_a_day() {
+        let refused = anyhow::Error::from(account::Rejected("Bybit: kod 170131".to_owned()));
+        let unknown = anyhow::anyhow!("Bybit EU: zlecenie bez wyniku po 5 s");
+        assert!(may_flatten(&refused, 0));
+        assert!(!may_flatten(&refused, MAX_FAILED_HEDGES));
+        assert!(!may_flatten(&unknown, 0));
+    }
 
     #[test]
     fn resting_orders_and_pending_fills_reserve_the_hedge_on_bybit() {

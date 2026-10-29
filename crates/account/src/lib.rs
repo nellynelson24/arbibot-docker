@@ -7,6 +7,21 @@ pub use bybit::Bybit;
 pub use credentials::{Credentials, Scope, secret};
 pub use okx::{Okx, OrderEvent, OrderUpdate};
 
+#[derive(Debug)]
+pub struct Rejected(pub String);
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rejected {}
+
+pub fn rejected(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<Rejected>().is_some())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Deposit {
     pub amount: f64,
@@ -142,6 +157,18 @@ fn rate_limited(e: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_refusals_are_told_apart_from_unknown_outcomes() {
+        let refused =
+            anyhow::Error::from(Rejected("Bybit /v5/order/create: kod 170131".to_owned()))
+                .context("Bybit EU: zlecenie sprzedaży 97.2 po 0.15464");
+        assert!(rejected(&refused));
+        assert!(format!("{refused:#}").contains("170131"));
+        assert!(!rejected(&anyhow::anyhow!(
+            "Bybit EU: zlecenie fb1x2 bez wyniku po 5 s"
+        )));
+    }
 
     #[test]
     fn rate_limit_errors_are_recognised() {

@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use serde_json::Value;
 
 use super::stats::{mean, pct, pl_hour, pl_time};
-use super::{Run, executed, num, text, ts};
+use super::{MIN_CASES, Run, executed, num, text, ts};
 
 pub(super) fn live_section(
     run: &Run,
@@ -197,6 +197,8 @@ pub(super) fn live_section(
         }
     }
 
+    hedge_section(run, full, advice);
+
     let mut hours: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
     for t in &trades {
         let h = pl_hour(ts(t));
@@ -259,6 +261,80 @@ pub(super) fn live_section(
     let _ = writeln!(full);
 }
 
+fn hedge_section(run: &Run, full: &mut String, advice: &mut Vec<String>) {
+    let probed = |kind: &str| -> Vec<&Value> {
+        run.of(kind)
+            .into_iter()
+            .filter(|v| v["book_age_ms"].is_number())
+            .collect()
+    };
+    let (hedges, misses) = (probed("maker_hedge"), probed("hedge_miss"));
+    if hedges.is_empty() && misses.is_empty() {
+        return;
+    }
+    let column = |rows: &[&Value], key: &str| -> Vec<f64> {
+        rows.iter().filter_map(|v| v[key].as_f64()).collect()
+    };
+    let slip = |v: &&Value| -> Option<f64> {
+        let (top, avg) = (v["top"].as_f64()?, v["hedge_price"].as_f64()?);
+        if v["flatten"].is_string() || top <= 0.0 {
+            return None;
+        }
+        Some(match text(v, "side") {
+            "buy" => (top - avg) / top * 1e4,
+            _ => (avg - top) / top * 1e4,
+        })
+    };
+    let flattened = hedges.iter().filter(|v| v["flatten"].is_string()).count();
+    let _ = writeln!(
+        full,
+        "\nZabezpieczenia makera (próby na Bybit):\n\n| Próba | n | wiek książki Bybit p50/p90 ms | od wypełnienia p50/p90 ms | poślizg wobec ceny z książki śr. bp |\n|---|---|---|---|---|"
+    );
+    for (label, rows) in [("udana", &hedges), ("chybiona", &misses)] {
+        let (mut age, mut wait) = (column(rows, "book_age_ms"), column(rows, "since_fill_ms"));
+        let slips: Vec<f64> = rows.iter().filter_map(slip).collect();
+        let _ = writeln!(
+            full,
+            "| {label} | {} | {:.0} / {:.0} | {:.0} / {:.0} | {} |",
+            rows.len(),
+            pct(&mut age, 50.0),
+            pct(&mut age, 90.0),
+            pct(&mut wait, 50.0),
+            pct(&mut wait, 90.0),
+            if slips.is_empty() {
+                "-".to_owned()
+            } else {
+                format!("{:+.1}", mean(slips.iter().copied()))
+            }
+        );
+    }
+    if flattened > 0 {
+        let _ = writeln!(
+            full,
+            "\nDomknięte na OKX po odrzuceniu zabezpieczenia na Bybit: {flattened}"
+        );
+    }
+    let attempts = hedges.len() + misses.len();
+    if misses.len() * 5 >= attempts && attempts >= MIN_CASES {
+        let (mut ok_age, mut miss_age) = (
+            column(&hedges, "book_age_ms"),
+            column(&misses, "book_age_ms"),
+        );
+        let (ok_p50, miss_p50) = (pct(&mut ok_age, 50.0), pct(&mut miss_age, 50.0));
+        advice.push(if miss_p50 > 2.0 * ok_p50.max(50.0) {
+            format!(
+                "Chybione zabezpieczenia ({} z {attempts}) mają starszą książkę Bybit (p50 {miss_p50:.0} ms wobec {ok_p50:.0} ms): dane z Bybit docierają z opóźnieniem.",
+                misses.len()
+            )
+        } else {
+            format!(
+                "Chybione zabezpieczenia ({} z {attempts}) przy świeżej książce Bybit (p50 {miss_p50:.0} ms): cena ucieka, zanim zlecenie dojdzie — rozważ szerszy limit pierwszej próby.",
+                misses.len()
+            )
+        });
+    }
+}
+
 fn pair_since(prior: Option<&Value>, starts: &[&Value]) -> Option<f64> {
     let mut previous = prior.map(|p| &p["pair"]);
     let mut since = None;
@@ -275,6 +351,30 @@ fn pair_since(prior: Option<&Value>, starts: &[&Value]) -> Option<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hedge_misses_with_stale_books_are_reported() {
+        let hedge = |age: f64| {
+            json!({"type": "maker_hedge", "ts_ms": 1.0, "side": "buy", "top": 0.1500, "hedge_price": 0.1497,
+                "book_age_ms": age, "since_fill_ms": 120.0, "pnl": 0.02})
+        };
+        let miss = |age: f64| json!({"type": "hedge_miss", "ts_ms": 1.0, "side": "buy", "book_age_ms": age, "since_fill_ms": 150.0});
+        let mut rows: Vec<Value> = (0..6).map(|_| hedge(40.0)).collect();
+        rows.extend((0..3).map(|_| miss(900.0)));
+        let run = Run {
+            label: "na żywo".to_owned(),
+            live: true,
+            start: None,
+            prior_start: None,
+            rows,
+        };
+        let (mut full, mut advice) = (String::new(), Vec::new());
+        hedge_section(&run, &mut full, &mut advice);
+        assert!(full.contains("| udana | 6 | 40 / 40 | 120 / 120 | +20.0 |"));
+        assert!(full.contains("| chybiona | 3 | 900 / 900 | 150 / 150 | - |"));
+        assert_eq!(advice.len(), 1);
+        assert!(advice[0].contains("starszą książkę Bybit"));
+    }
 
     #[test]
     fn capital_is_compared_from_the_last_pair_change() {

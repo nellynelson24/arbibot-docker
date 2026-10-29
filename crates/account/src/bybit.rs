@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use reqwest::Client;
 use serde_json::{Value, json};
 
 use crate::{
-    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rules,
-    Side, num, retry_rate_limited, sign,
+    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rejected,
+    Rules, Side, num, retry_rate_limited, sign,
 };
 
 const BASE: &str = "https://api.bybit.eu";
@@ -316,7 +316,11 @@ fn result(path: &str, body: &str) -> Result<Value> {
     let v: Value = serde_json::from_str(body)
         .with_context(|| format!("Bybit {path}: odpowiedź nie jest JSON-em"))?;
     if v["retCode"] != 0 {
-        bail!("Bybit {path}: kod {} {}", v["retCode"], v["retMsg"]);
+        return Err(Rejected(format!(
+            "Bybit {path}: kod {} {}",
+            v["retCode"], v["retMsg"]
+        ))
+        .into());
     }
     Ok(v["result"].clone())
 }

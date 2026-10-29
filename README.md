@@ -17,6 +17,7 @@ Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje 
 
 ## Schemat transakcji
 
+- Gdy Bybit odrzuci zabezpieczenie makera (np. brak środków), bot domyka pozycję na OKX transakcją odwrotną, najwyżej 3 razy na dobę; przy kolejnym odrzuceniu albo nieudanym domknięciu zatrzymuje się. Zlecenia bez jasnego wyniku nie są domykane, tylko zatrzymują bota.
 - Środki zarezerwowane dla makera nie są dostępne dla takera ani rebalansu: otwarte zlecenia maker blokują walutę na OKX i środki na zabezpieczenie na Bybit, a wypełnienia czekające na zabezpieczenie blokują je na Bybit.
 - `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
 - Salda wyrównują się same: kierunek, który je wyrównuje, ma niższy próg (`--restore-min-bps`, 30 bp), gdy przeciwny ma mniej niż połowę jego środków.
@@ -57,6 +58,8 @@ Pliki w `~/.arbibot/secrets/`, opis w [VPS.md](VPS.md). Klucze do odczytu i hand
 - Po błędzie zlecenia albo limicie straty bot sam tworzy `data/STOP`; komunikat podaje, które nogi zostały wykonane. Wznowienie: usuń plik i `docker compose restart live`.
 
 ## Raport
+
+Raport na żywo pokazuje też próby zabezpieczeń makera: udane i chybione, wiek książki Bybit i czas od wypełnienia (p50/p90) oraz poślizg wobec ceny z książki, z wnioskiem, czy chybienia biorą się z opóźnionych danych Bybit, czy z ruchu ceny. `/stan` na Telegramie podaje salda obu giełd, a komunikat o braku środków bieżący koszt rebalansu handlem wobec limitu.
 
 ```bash
 docker compose exec live bot report

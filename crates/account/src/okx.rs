@@ -8,8 +8,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rules,
-    Side, num, retry_rate_limited, sign,
+    Balance, Credentials, Deposit, DepositAddress, Fees, KeyRights, Network, OrderFill, Rejected,
+    Rules, Side, num, retry_rate_limited, sign,
 };
 
 const BASE: &str = "https://eea.okx.com";
@@ -454,13 +454,14 @@ fn data(path: &str, body: &str) -> Result<Value> {
         .with_context(|| format!("OKX {path}: odpowiedź nie jest JSON-em"))?;
     if v["code"] != "0" {
         let item = &v["data"][0];
-        bail!(
+        return Err(Rejected(format!(
             "OKX {path}: kod {} {} {} {}",
             v["code"],
             v["msg"],
             item["sCode"].as_str().unwrap_or_default(),
             item["sMsg"].as_str().unwrap_or_default()
-        );
+        ))
+        .into());
     }
     Ok(v["data"].clone())
 }
