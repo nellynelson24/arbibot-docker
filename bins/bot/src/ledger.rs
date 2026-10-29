@@ -45,6 +45,26 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn history(&self) -> Vec<Value> {
+        let mut files: Vec<PathBuf> = fs::read_dir(&self.dir)
+            .map(|dir| {
+                dir.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+            .iter()
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .flat_map(|text| {
+                text.lines()
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect::<Vec<Value>>()
+            })
+            .collect()
+    }
+
     pub fn today(&self) -> Vec<Value> {
         let path = self.dir.join(format!("{}.jsonl", utc_date(now_ms())));
         fs::read_to_string(path)

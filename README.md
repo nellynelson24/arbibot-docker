@@ -59,7 +59,7 @@ Pliki w `~/.arbibot/secrets/`, opis w [VPS.md](VPS.md). Klucze do odczytu i hand
 
 ## Raport
 
-Raport na żywo pokazuje też próby zabezpieczeń makera: udane i chybione, wiek książki Bybit i czas od wypełnienia (p50/p90) oraz poślizg wobec ceny z książki, z wnioskiem, czy chybienia biorą się z opóźnionych danych Bybit, czy z ruchu ceny. `/stan` na Telegramie podaje salda obu giełd, a komunikat o braku środków bieżący koszt rebalansu handlem wobec limitu.
+Raport na żywo pokazuje też próby zabezpieczeń makera: udane i chybione, wiek książki Bybit i czas od wypełnienia (p50/p90) oraz poślizg wobec ceny z książki, z wnioskiem, czy chybienia biorą się z opóźnionych danych Bybit, czy z ruchu ceny. `/stan` na Telegramie podaje salda obu giełd i łączny wynik liczony z dziennika (od początku handlu i od zmiany na obecną parę, bez zerowania przy restarcie; ten sam wynik jest w wiadomości „Start” i w podsumowaniu dnia), a komunikat o braku środków bieżący koszt rebalansu handlem wobec limitu.
 
 ```bash
 docker compose exec live bot report

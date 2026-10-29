@@ -366,6 +366,7 @@ impl Engine {
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
         self.day_trades += 1;
+        self.totals.add(pnl, true);
         let notional = maker_cash.abs();
         let line = format!(
             "maker: {} {:.4} {} na OKX EEA, {} na {} po {:.6}: wynik {:+.4} {} ({:+.1} bp)",

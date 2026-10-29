@@ -23,7 +23,8 @@ use compare::{agreement_section, variants_section};
 use live::live_section;
 use makers::scanner_maker_section;
 use market::market_section;
-use stats::{pl_hour, pl_time};
+use stats::pl_hour;
+pub use stats::pl_time;
 use strategy::{calibration_section, maker_section};
 
 const HOUR_MS: f64 = 3_600_000.0;

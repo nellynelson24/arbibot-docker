@@ -8,6 +8,7 @@ mod rebalance;
 mod status;
 mod switch;
 mod taker;
+mod totals;
 mod transfer;
 
 use std::path::PathBuf;
@@ -106,6 +107,7 @@ struct Engine {
     missed_since: [Option<Instant>; 2],
     day_rebalances: u32,
     day_failed_hedges: u32,
+    totals: totals::Totals,
     blocked_since: [Option<Instant>; 2],
     rebalance_max_cost_bps: f64,
     last_trade_rebalance: Option<Instant>,
@@ -198,6 +200,7 @@ async fn run(args: Args, live: Option<(Accounts, bool, bool)>) -> Result<()> {
         missed_since: [None, None],
         day_rebalances: 0,
         day_failed_hedges: 0,
+        totals: totals::Totals::default(),
         blocked_since: [None, None],
         rebalance_max_cost_bps: args.rebalance_max_cost_bps,
         last_trade_rebalance: None,
@@ -325,6 +328,7 @@ impl Engine {
             "latency_ms": [args.okx_latency_ms, args.bybit_latency_ms],
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
         }))?;
+        self.totals = totals::Totals::from_ledger(self.ledger.history());
         let mut started = format!(
             "Start {label}: {}/{q}, kapitał {:.2} {q}, transakcja {} {q}, próg {} bp, \
          dzienny limit straty {} {q}.",
@@ -351,6 +355,7 @@ impl Engine {
                 self.day_trades, self.day_pnl, self.market.quote
             );
         }
+        started += &format!(" {}", self.totals.summary(&self.market.quote));
         println!(
             "{started} Zatrzymanie: Ctrl+C lub plik {}.\n",
             self.stop_file.display()

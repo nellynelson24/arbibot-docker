@@ -81,6 +81,7 @@ impl Engine {
         self.stats.rebalance_cost += r.cost;
         self.stats.pnl -= r.cost;
         self.day_pnl -= r.cost;
+        self.totals.add(-r.cost, false);
         let line = format!(
             "rebalans: {:.4} {} i {:.2} {} w drodze ({} min), koszt {:.4} {}",
             r.base,

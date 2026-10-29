@@ -170,6 +170,7 @@ impl Engine {
         }
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
+        self.totals.add(pnl, !rebalancing);
         let notional = plan.qty * plan.buy_limit;
         let mut notes = String::new();
         if let Some(v) = remainder_venue {

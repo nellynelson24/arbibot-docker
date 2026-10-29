@@ -38,7 +38,7 @@ fn pl_offset_hours(ms: f64) -> i64 {
     }
 }
 
-pub(super) fn pl_time(ms: f64, format: &str) -> String {
+pub fn pl_time(ms: f64, format: &str) -> String {
     let shifted = ms + pl_offset_hours(ms) as f64 * HOUR_MS;
     DateTime::from_timestamp_millis(shifted as i64)
         .map(|t| t.format(format).to_string())

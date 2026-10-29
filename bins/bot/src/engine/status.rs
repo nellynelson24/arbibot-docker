@@ -80,8 +80,12 @@ impl Engine {
         let day = selector::utc_date(now);
         if day != self.day {
             self.tell(format!(
-                "dzień {} zakończony: transakcje {}, wynik {:+.4} {}",
-                self.day, self.day_trades, self.day_pnl, self.market.quote
+                "dzień {} zakończony: transakcje {}, wynik {:+.4} {}. {}",
+                self.day,
+                self.day_trades,
+                self.day_pnl,
+                self.market.quote,
+                self.totals.summary(&self.market.quote)
             ));
             self.day = day;
             self.day_pnl = 0.0;
@@ -203,7 +207,7 @@ impl Engine {
         println!("[{}] {line}", clock());
         if let Some(telegram) = &self.telegram {
             telegram.set_status(format!(
-                "{} {}/{}: {line}\n{}",
+                "{} {}/{}: {line}\n{}\n{}",
                 clock(),
                 self.market.base,
                 self.market.quote,
@@ -211,7 +215,8 @@ impl Engine {
                     &self.inventory.wallets,
                     &self.market.base,
                     &self.market.quote
-                )
+                ),
+                self.totals.summary(&self.market.quote)
             ));
         }
         self.ledger.write(json!({
