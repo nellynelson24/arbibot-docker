@@ -7,9 +7,9 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use venues::Venue;
 
-use super::maker::{Resting, index};
+use super::maker::{Resting, index, reserve};
 use super::orders::text;
-use super::{Engine, OKX, clock};
+use super::{BYBIT, Engine, OKX, clock};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
 use crate::paper::Side;
@@ -226,19 +226,21 @@ impl Engine {
     }
 
     pub(super) fn free(&self) -> [Wallet; 2] {
-        let mut w = self.inventory.wallets;
-        let Some(live) = self.maker.as_ref().and_then(|m| m.live.as_ref()) else {
-            return w;
+        let Some(maker) = &self.maker else {
+            return self.inventory.wallets;
         };
-        let fee = self.market.fees[OKX].maker;
-        for own in live.orders.values() {
-            let open = (own.qty - own.booked).max(0.0);
-            match own.side {
-                Side::Buy => w[OKX].quote -= open * own.price * (1.0 + fee),
-                Side::Sell => w[OKX].base -= open,
-            }
-        }
-        w
+        let orders: Vec<(Side, f64, f64)> = maker
+            .live
+            .iter()
+            .flat_map(|l| l.orders.values())
+            .map(|own| (own.side, (own.qty - own.booked).max(0.0), own.price))
+            .collect();
+        reserve(
+            self.inventory.wallets,
+            &orders,
+            (maker.unhedged, maker.unhedged_cash),
+            [self.market.fees[OKX].maker, self.market.fees[BYBIT].taker],
+        )
     }
 
     pub(super) async fn on_maker_event(&mut self, event: Event) -> Result<()> {

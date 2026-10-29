@@ -17,6 +17,7 @@ Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje 
 
 ## Schemat transakcji
 
+- Środki zarezerwowane dla makera nie są dostępne dla takera ani rebalansu: otwarte zlecenia maker blokują walutę na OKX i środki na zabezpieczenie na Bybit, a wypełnienia czekające na zabezpieczenie blokują je na Bybit.
 - `--sequential`: najpierw noga na giełdzie, której cena dłużej stoi (jej oferta zniknie pierwsza), druga dopiero po wypełnieniu, z limitem bez straty względem ceny pierwszej. Gdy pierwsza nie wejdzie, nic się nie dzieje.
 - Salda wyrównują się same: kierunek, który je wyrównuje, ma niższy próg (`--restore-min-bps`, 30 bp), gdy przeciwny ma mniej niż połowę jego środków.
 - `--trade-rebalance`: gdy kierunek jest zablokowany od 15 min, transakcja odwrotna kosztem do 45 bp, najwyżej raz na 10 min. Wymaga, by kierunek odwrotny miał co najmniej 3 × minimalną transakcję (30 USDC). Nogi rebalansu idą po kolei: najpierw OKX, Bybit dopiero po jej wypełnieniu, z limitem z planu rebalansu. Komunikat o braku środków na Telegramie mówi, czy bot wyrówna salda sam, czy trzeba przelać ręcznie.

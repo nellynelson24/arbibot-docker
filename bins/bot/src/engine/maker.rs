@@ -8,6 +8,7 @@ use super::orders::{floor_to, side_id};
 use super::taker::books_fresh;
 use super::{BYBIT, Engine, OKX, clock};
 use crate::book::{Book, Trade};
+use crate::inventory::Wallet;
 use crate::ledger::now_ms;
 use crate::paper::Side;
 
@@ -28,7 +29,7 @@ pub(super) struct Maker {
     pub(super) quotes: [Option<Resting>; 2],
     last_quoted: [Option<Instant>; 2],
     pub(super) unhedged: [f64; 2],
-    unhedged_cash: [f64; 2],
+    pub(super) unhedged_cash: [f64; 2],
     pub(super) live: Option<LiveMaker>,
 }
 
@@ -157,8 +158,16 @@ impl Engine {
     }
 
     fn maker_funded(&self, side: Side, price: f64, qty: f64, bybit: &Book) -> bool {
-        let [okx, hedge] = self.inventory.wallets;
         let hedge_fee = self.market.fees[BYBIT].taker;
+        let [okx, hedge] = match &self.maker {
+            Some(m) => reserve(
+                self.inventory.wallets,
+                &[],
+                (m.unhedged, m.unhedged_cash),
+                [self.market.fees[OKX].maker, hedge_fee],
+            ),
+            None => self.inventory.wallets,
+        };
         match side {
             Side::Sell => {
                 bybit.buy_fill(qty).is_some_and(|(_, worst)| {
@@ -345,9 +354,59 @@ fn match_trade(quote: &mut Resting, side: Side, price: f64, qty: f64) -> f64 {
     filled
 }
 
+pub(super) fn reserve(
+    mut w: [Wallet; 2],
+    orders: &[(Side, f64, f64)],
+    (unhedged, unhedged_cash): ([f64; 2], [f64; 2]),
+    [maker_fee, hedge_fee]: [f64; 2],
+) -> [Wallet; 2] {
+    let hedge_buy = |value: f64| value * (1.0 + HEDGE_SLIPPAGE) * (1.0 + hedge_fee);
+    for &(side, open, price) in orders {
+        match side {
+            Side::Buy => {
+                w[OKX].quote -= open * price * (1.0 + maker_fee);
+                w[BYBIT].base -= open;
+            }
+            Side::Sell => {
+                w[OKX].base -= open;
+                w[BYBIT].quote -= hedge_buy(open * price);
+            }
+        }
+    }
+    w[BYBIT].base -= unhedged[index(Side::Buy)];
+    w[BYBIT].quote -= hedge_buy(unhedged_cash[index(Side::Sell)].abs());
+    w
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resting_orders_and_pending_fills_reserve_the_hedge_on_bybit() {
+        let wallets = [
+            Wallet {
+                base: 100.0,
+                quote: 50.0,
+            },
+            Wallet {
+                base: 281.6,
+                quote: 80.0,
+            },
+        ];
+        let orders = [(Side::Buy, 97.2, 0.155), (Side::Sell, 50.0, 0.16)];
+        let fees = [0.0008, 0.0025];
+        let [okx, bybit] = reserve(wallets, &orders, ([10.0, 0.0], [-1.55, 0.0]), fees);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(okx.quote, 50.0 - 97.2 * 0.155 * 1.0008));
+        assert!(close(okx.base, 50.0));
+        assert!(close(bybit.base, 281.6 - 97.2 - 10.0));
+        assert!(close(bybit.quote, 80.0 - 50.0 * 0.16 * 1.005 * 1.0025));
+
+        let [_, after_sell] = reserve(wallets, &[], ([0.0, 20.0], [0.0, 3.2]), fees);
+        assert!(close(after_sell.quote, 80.0 - 3.2 * 1.005 * 1.0025));
+        assert!(close(after_sell.base, 281.6));
+    }
 
     fn resting(qty: f64, queue_ahead: f64) -> Resting {
         Resting {
