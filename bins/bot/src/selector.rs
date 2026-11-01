@@ -84,13 +84,17 @@ pub fn rank(
 }
 
 pub fn liquidity_issue(pair: &str, books: &[Book; 2]) -> Option<String> {
+    liquidity_issue_on(pair, [&books[0], &books[1]], VENUE_NAMES)
+}
+
+pub fn liquidity_issue_on(pair: &str, books: [&Book; 2], names: [&str; 2]) -> Option<String> {
     let pair = pair.to_uppercase();
     let Some((base, quote)) = pair.split_once('/') else {
         return Some("zły format pary".to_owned());
     };
     let key = (base.to_owned(), quote.to_owned());
     let mut mids = [0.0; 2];
-    for (v, name) in VENUE_NAMES.iter().enumerate() {
+    for (v, name) in names.iter().enumerate() {
         let Some(q) = books[v].get(&key).filter(|q| q.bid > 0.0 && q.ask > q.bid) else {
             return Some(format!("brak notowań na {name}"));
         };
@@ -99,7 +103,7 @@ pub fn liquidity_issue(pair: &str, books: &[Book; 2]) -> Option<String> {
         if spread > MAX_SPREAD_BPS {
             return Some(format!("spread {name} {spread:.0} bp"));
         }
-        let Some(usd) = q.volume.zip(usd_rate(quote, books)).map(|(v, r)| v * r) else {
+        let Some(usd) = q.volume.zip(usd_rate(quote, &books)).map(|(v, r)| v * r) else {
             return Some(format!("brak obrotu {name}"));
         };
         if usd < MIN_VOLUME_USD {
@@ -115,7 +119,7 @@ fn mid(q: &Quote) -> f64 {
     (q.bid + q.ask) / 2.0
 }
 
-fn usd_rate(quote: &str, books: &[Book; 2]) -> Option<f64> {
+fn usd_rate(quote: &str, books: &[&Book; 2]) -> Option<f64> {
     if matches!(quote, "USDC" | "USDT" | "USD") {
         return Some(1.0);
     }

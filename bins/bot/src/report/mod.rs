@@ -106,16 +106,22 @@ async fn daily(args: Args) -> Result<()> {
     }
 }
 
-async fn books() -> Option<[Book; 2]> {
+async fn books() -> Option<[Book; 3]> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .ok()?;
-    match tokio::try_join!(
+    let (okx, bybit, bitvavo) = tokio::join!(
         Venue::Okx.fetch_quotes(&http),
-        Venue::Bybit.fetch_quotes(&http)
-    ) {
-        Ok((okx, bybit)) => Some([okx, bybit]),
+        Venue::Bybit.fetch_quotes(&http),
+        Venue::Bitvavo.fetch_quotes(&http)
+    );
+    let bitvavo = bitvavo.unwrap_or_else(|e| {
+        println!("Notowania Bitvavo niedostępne: {e:#}");
+        Book::new()
+    });
+    match okx.and_then(|okx| Ok((okx, bybit?))) {
+        Ok((okx, bybit)) => Some([okx, bybit, bitvavo]),
         Err(e) => {
             println!("Notowania giełd niedostępne, raport bez filtrów płynności: {e:#}");
             None
@@ -261,7 +267,7 @@ fn executed(trade: &Value) -> bool {
     text(trade, "outcome") != "brak wypełnienia"
 }
 
-pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 2]>) -> Result<Report> {
+pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 3]>) -> Result<Report> {
     let runs: Vec<Run> = sources(data_dir)
         .into_iter()
         .filter_map(|(label, dir, live)| load(label, &dir, live, since, until))

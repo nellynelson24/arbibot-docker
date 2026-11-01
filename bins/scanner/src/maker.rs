@@ -204,13 +204,22 @@ impl<'a> MakerSim<'a> {
             return;
         }
         let capital = self.cfg.capital;
+        let fees = self.fees(market);
         let state = self
             .markets
             .entry(market)
             .or_insert_with(|| MarketState::new(capital));
         for side in Side::BOTH {
-            state.update_quote(side, market, maker, hedge, &self.cfg);
+            state.update_quote(side, fees, maker, hedge, &self.cfg);
         }
+    }
+
+    fn fees(&self, market: Market) -> (f64, f64) {
+        let quote = &self.universe.pairs[market.pair].quote;
+        (
+            market.maker.maker_fee_on(quote),
+            market.hedge.taker_fee_on(quote),
+        )
     }
 
     fn fill(&mut self, market: Market, side: Side, size: f64) {
@@ -258,7 +267,7 @@ impl<'a> MakerSim<'a> {
             wait_ms,
             ..
         } = *fill;
-        let (maker_fee, taker_fee) = (market.maker.maker_fee(), market.hedge.taker_fee());
+        let (maker_fee, taker_fee) = self.fees(market);
         let qty = size / price;
         let (hedge_price, profit) = match side {
             Side::Sell => (
@@ -313,7 +322,14 @@ impl MarketState {
         }
     }
 
-    fn update_quote(&mut self, side: Side, market: Market, maker: &Top, hedge: &Top, cfg: &Config) {
+    fn update_quote(
+        &mut self,
+        side: Side,
+        fees: (f64, f64),
+        maker: &Top,
+        hedge: &Top,
+        cfg: &Config,
+    ) {
         let now = Instant::now();
         let size = self.order_size(side, hedge, cfg);
         let can_place = self.last_placed[side.index()]
@@ -335,7 +351,7 @@ impl MarketState {
         }
 
         let price = slot.as_ref().map_or(best, |q| q.price);
-        let edge_bps = edge(side, market, price, hedge) * 1e4;
+        let edge_bps = edge(side, fees, price, hedge) * 1e4;
         if !(edge_bps >= cfg.min_edge_bps && size >= cfg.min_order) {
             *slot = None;
             return;
@@ -367,8 +383,7 @@ impl MarketState {
     }
 }
 
-fn edge(side: Side, market: Market, price: f64, hedge: &Top) -> f64 {
-    let (maker_fee, taker_fee) = (market.maker.maker_fee(), market.hedge.taker_fee());
+fn edge(side: Side, (maker_fee, taker_fee): (f64, f64), price: f64, hedge: &Top) -> f64 {
     match side {
         Side::Sell => price * (1.0 - maker_fee) / (hedge.ask * (1.0 + taker_fee)) - 1.0,
         Side::Buy => hedge.bid * (1.0 - taker_fee) / (price * (1.0 + maker_fee)) - 1.0,
@@ -434,18 +449,14 @@ mod tests {
 
     #[test]
     fn edge_counts_maker_and_taker_fees() {
-        let market = Market {
-            pair: 0,
-            maker: Venue::Okx,
-            hedge: Venue::Bybit,
-        };
+        let fees = (Venue::Okx.maker_fee(), Venue::Bybit.taker_fee());
         let hedge = Top {
             bid: 0.99,
             bid_qty: 1.0,
             ask: 1.0,
             ask_qty: 1.0,
         };
-        let sell = edge(Side::Sell, market, 1.01, &hedge);
+        let sell = edge(Side::Sell, fees, 1.01, &hedge);
         let expected =
             1.01 * (1.0 - Venue::Okx.maker_fee()) / (1.0 * (1.0 + Venue::Bybit.taker_fee())) - 1.0;
         assert!((sell - expected).abs() < 1e-12);

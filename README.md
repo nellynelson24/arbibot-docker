@@ -30,7 +30,7 @@ Warianty na sucho (`dry` i `ab-*`) różnią się od głównego (ARB/USDC, leniw
 
 Raport poleca tylko pary, które przechodzą filtry płynności na obu giełdach: obrót 24 h co najmniej 250 tys. USD, spread najwyżej 30 bp i różnica cen między giełdami najwyżej 100 bp (notowania z chwili raportu). Te same filtry stosuje wybór pary bez `--pair`.
 
-Skaner symuluje makera (zlecenie na OKX z marżą 20 bp, zabezpieczenie na Bybit) na wszystkich parach. Raport układa pary po filtrach płynności według szacowanego zysku makera na dobę, porównuje symulację obecnej pary z wynikiem na żywo i radzi zmianę pary, gdy przewaga zwraca koszt zmiany (~0,4 USDC) w tydzień.
+Skaner symuluje makera (zlecenie na OKX z marżą 20 bp, zabezpieczenie na Bybit albo Bitvavo) na wszystkich parach. Prowizje Bitvavo zależą od rynku: na rynkach USDC 0,05% maker i taker, na pozostałych 0,15% / 0,25%. Raport pokazuje osobny ranking dla zabezpieczenia na Bitvavo, żeby sprawdzić, czy ta giełda opłaca się przed napisaniem jej obsługi w bocie. Raport układa pary po filtrach płynności według szacowanego zysku makera na dobę, porównuje symulację obecnej pary z wynikiem na żywo i radzi zmianę pary, gdy przewaga zwraca koszt zmiany (~0,4 USDC) w tydzień.
 
 ## Dane rynkowe
 

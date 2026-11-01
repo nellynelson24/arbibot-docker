@@ -67,6 +67,20 @@ impl Venue {
         }
     }
 
+    pub fn taker_fee_on(self, quote: &str) -> f64 {
+        match (self, quote) {
+            (Self::Bitvavo, "USDC") => 0.0005,
+            _ => self.taker_fee(),
+        }
+    }
+
+    pub fn maker_fee_on(self, quote: &str) -> f64 {
+        match (self, quote) {
+            (Self::Bitvavo, "USDC") => 0.0005,
+            _ => self.maker_fee(),
+        }
+    }
+
     pub fn maker_fee(self) -> f64 {
         match self {
             Self::Okx => 0.0008,
@@ -160,7 +174,7 @@ impl Venue {
                     .collect()
             }
             Self::Bitvavo => {
-                let v = get_json(client, "https://api.bitvavo.com/v2/ticker/book").await?;
+                let v = get_json(client, "https://api.bitvavo.com/v2/ticker/24h").await?;
                 array(&v)?
                     .iter()
                     .filter_map(|t| {
@@ -173,6 +187,7 @@ impl Venue {
                             &t["ask"],
                             &t["askSize"],
                         )
+                        .map(|(k, q)| (k, with_volume(q, &t["volumeQuote"])))
                     })
                     .collect()
             }
@@ -257,4 +272,20 @@ fn num(v: &Value) -> Option<f64> {
         _ => return None,
     };
     x.is_finite().then_some(x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitvavo_usdc_markets_have_their_own_fees() {
+        assert_eq!(Venue::Bitvavo.taker_fee_on("USDC"), 0.0005);
+        assert_eq!(Venue::Bitvavo.maker_fee_on("USDC"), 0.0005);
+        assert_eq!(
+            Venue::Bitvavo.taker_fee_on("EUR"),
+            Venue::Bitvavo.taker_fee()
+        );
+        assert_eq!(Venue::Bybit.taker_fee_on("USDC"), Venue::Bybit.taker_fee());
+    }
 }

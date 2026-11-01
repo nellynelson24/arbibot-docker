@@ -34,7 +34,7 @@ pub async fn top_pairs(
                     tops[venue.index()] = Top::from_quote(quote);
                 }
             }
-            best_route(pair, &tops, |_| true)
+            best_route(pair, &p.quote, &tops, |_| true)
         })
         .filter(|(_, signal)| signal.size.is_none_or(|s| s >= MIN_OFFER))
         .collect();

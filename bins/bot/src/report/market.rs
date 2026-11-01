@@ -8,7 +8,7 @@ use venues::Book;
 
 use super::stats::pl_hour;
 use super::{MIN_CASES, Run, executed, num, text};
-use crate::selector::{MAX_GAP_BPS, MAX_SPREAD_BPS, MIN_VOLUME_USD, liquidity_issue, utc_date};
+use crate::selector::{MAX_GAP_BPS, MAX_SPREAD_BPS, MIN_VOLUME_USD, liquidity_issue_on, utc_date};
 
 const MIN_OFFER: f64 = 5.0;
 
@@ -17,7 +17,7 @@ fn quote(pair: &str) -> &str {
 }
 
 pub(super) fn market_section(
-    (data_dir, books): (&Path, Option<&[Book; 2]>),
+    (data_dir, books): (&Path, Option<&[Book; 3]>),
     run: Option<&Run>,
     runs: &[Run],
     (since, until): (f64, f64),
@@ -111,7 +111,9 @@ pub(super) fn market_section(
     let rejected: Vec<(String, String)> = books.map_or_else(Vec::new, |b| {
         ranked
             .iter()
-            .filter_map(|(p, _)| liquidity_issue(p, b).map(|r| ((*p).clone(), r)))
+            .filter_map(|(p, _)| {
+                liquidity_issue_on(p, [&b[0], &b[1]], ["OKX", "Bybit"]).map(|r| ((*p).clone(), r))
+            })
             .collect()
     });
     ranked.retain(|(p, _)| rejected.iter().all(|(r, _)| r != *p));

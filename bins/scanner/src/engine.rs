@@ -150,7 +150,7 @@ pub struct Signal {
 }
 
 impl Signal {
-    pub fn of(route: Route, buy: &Top, sell: &Top) -> Option<Self> {
+    pub fn of(route: Route, quote: &str, buy: &Top, sell: &Top) -> Option<Self> {
         if !buy.is_usable() || !sell.is_usable() {
             return None;
         }
@@ -158,8 +158,8 @@ impl Signal {
         if gross.abs() > MAX_PLAUSIBLE_GAP {
             return None;
         }
-        let net = sell.bid * (1.0 - route.sell.taker_fee())
-            / (buy.ask * (1.0 + route.buy.taker_fee()))
+        let net = sell.bid * (1.0 - route.sell.taker_fee_on(quote))
+            / (buy.ask * (1.0 + route.buy.taker_fee_on(quote)))
             - 1.0;
         let size = known(buy.ask_qty)
             .zip(known(sell.bid_qty))
@@ -343,8 +343,14 @@ impl<'a> Engine<'a> {
 
     fn check(&mut self, route: Route) -> Result<()> {
         let tops = &self.tops[route.pair];
-        let signal = Signal::of(route, &tops[route.buy.index()], &tops[route.sell.index()])
-            .filter(|s| s.net_bps > self.min_net_bps);
+        let quote = &self.universe.pairs[route.pair].quote;
+        let signal = Signal::of(
+            route,
+            quote,
+            &tops[route.buy.index()],
+            &tops[route.sell.index()],
+        )
+        .filter(|s| s.net_bps > self.min_net_bps);
         match (signal, self.open.get_mut(&route)) {
             (Some(signal), Some(episode)) => episode.observe(signal),
             (Some(signal), None) => {
@@ -425,7 +431,8 @@ impl<'a> Engine<'a> {
         println!("[{} UTC] obserwowane pary:", utc_time(now_ms()));
         for &pair in &self.watched {
             let ticks = std::mem::take(&mut self.ticks_since_view[pair]);
-            let best = match best_route(pair, &self.tops[pair], |v| self.live[v.index()]) {
+            let quote = &self.universe.pairs[pair].quote;
+            let best = match best_route(pair, quote, &self.tops[pair], |v| self.live[v.index()]) {
                 Some((route, signal)) => format!(
                     "{:<9} → {:<9} {:+8.1} bp  oferta {:>6}",
                     route.buy.name(),
@@ -521,6 +528,7 @@ impl<'a> Engine<'a> {
 
 pub fn best_route(
     pair: PairId,
+    quote: &str,
     tops: &[Top; Venue::COUNT],
     usable: impl Fn(Venue) -> bool,
 ) -> Option<(Route, Signal)> {
@@ -531,7 +539,7 @@ pub fn best_route(
                 continue;
             }
             let route = Route { pair, buy, sell };
-            if let Some(signal) = Signal::of(route, &tops[buy.index()], &tops[sell.index()])
+            if let Some(signal) = Signal::of(route, quote, &tops[buy.index()], &tops[sell.index()])
                 && best.is_none_or(|(_, b)| signal.net_bps > b.net_bps)
             {
                 best = Some((route, signal));
@@ -581,5 +589,31 @@ impl JsonlLog {
             writeln!(file, "{line}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitvavo_usdc_signals_pay_the_lower_fee() {
+        let top = |bid: f64, ask: f64| Top {
+            bid,
+            bid_qty: 10.0,
+            ask,
+            ask_qty: 10.0,
+        };
+        let route = Route {
+            pair: 0,
+            buy: Venue::Okx,
+            sell: Venue::Bitvavo,
+        };
+        let (buy, sell) = (top(0.999, 1.0), top(1.003, 1.004));
+        let usdc = Signal::of(route, "USDC", &buy, &sell).unwrap();
+        let eur = Signal::of(route, "EUR", &buy, &sell).unwrap();
+        let expected = |fee: f64| (1.003 * (1.0 - fee) / (1.0 * 1.001) - 1.0) * 1e4;
+        assert!((usdc.net_bps - expected(0.0005)).abs() < 1e-9);
+        assert!((eur.net_bps - expected(0.0025)).abs() < 1e-9);
     }
 }
