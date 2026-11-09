@@ -49,6 +49,7 @@ pub struct Balance {
     pub asset: String,
     pub total: f64,
     pub available: f64,
+    pub usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]

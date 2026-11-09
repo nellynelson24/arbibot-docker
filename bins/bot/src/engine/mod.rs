@@ -90,10 +90,19 @@ struct Stats {
     maker_hedges: u32,
     maker_pnl: f64,
     hedge_misses: u32,
+    outside_change: f64,
+}
+
+struct Holding {
+    account: &'static str,
+    asset: String,
+    qty: f64,
+    usd: Option<f64>,
 }
 
 struct Engine {
     market: Market,
+    outside: [Vec<Holding>; 2],
     accounts: Accounts,
     live: Option<Accounts>,
     order_seq: AtomicU32,
@@ -185,6 +194,7 @@ async fn run(args: Args, live: Option<(Accounts, bool, bool)>) -> Result<()> {
         false => None,
     };
     let mut engine = Engine {
+        outside: [Vec::new(), Vec::new()],
         start_equity: inventory.equity(mid),
         inventory,
         accounts,
@@ -330,37 +340,9 @@ impl Engine {
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
         }))?;
         self.totals = totals::Totals::from_ledger(self.ledger.history());
-        let mut started = format!(
-            "Start {label}: {}/{q}, transakcja {} {q}, próg {} bp, dzienny limit straty {} {q}.",
-            self.market.base,
-            args.size,
-            args.min_bps,
-            args.daily_loss_limit,
-            q = self.market.quote
-        );
-        for (venue, w) in VENUES.iter().zip(self.inventory.wallets) {
-            started += &format!(
-                " {}: {} {} i {:.2} {}.",
-                venue.name(),
-                amount(w.base, 4),
-                self.market.base,
-                w.quote,
-                self.market.quote
-            );
-        }
-        if self.day_trades > 0 {
-            started += &format!(
-                " Dziś wcześniej: transakcje {}, wynik {:+.4} {}.",
-                self.day_trades, self.day_pnl, self.market.quote
-            );
-        }
-        started += &format!(
-            "\n{}",
-            self.totals
-                .summary(&self.market.quote, Some(self.start_equity))
-        );
+        let started = self.start_text(args, label, mid);
         println!(
-            "{started} Zatrzymanie: Ctrl+C lub plik {}.\n",
+            "{started}\nZatrzymanie: Ctrl+C lub plik {}.\n",
             self.stop_file.display()
         );
         self.tell(started);
@@ -407,6 +389,56 @@ impl Engine {
 }
 
 impl Engine {
+    fn start_text(&self, args: &Args, label: &str, mid: f64) -> String {
+        let (base, q) = (&self.market.base, &self.market.quote);
+        let mut lines = vec![format!("Start {label}: {base}/{q}")];
+        if args.maker {
+            lines.push(format!(
+                "• maker: zlecenia po {} {q} na {}, marża od {} bp, zabezpieczenie na {}",
+                args.maker_size.unwrap_or(args.size),
+                VENUES[OKX].name(),
+                args.maker_min_bps,
+                VENUES[BYBIT].name()
+            ));
+        }
+        lines.push(format!(
+            "• taker: transakcja {} {q}, próg {} bp",
+            args.size, args.min_bps
+        ));
+        lines.push(match args.trade_rebalance {
+            false => "• rebalans handlem: wyłączony".to_owned(),
+            true => format!(
+                "• rebalans handlem: {}, koszt najwyżej {} bp",
+                if args.lazy_rebalance {
+                    "tylko po straconym sygnale"
+                } else {
+                    "po 15 min blokady"
+                },
+                args.rebalance_max_cost_bps
+            ),
+        });
+        if args.skew_bps > 0.0 {
+            lines.push(format!(
+                "• przechył progów według sald: {} bp",
+                args.skew_bps
+            ));
+        }
+        lines.push(format!(
+            "• dzienny limit straty: {} {q}",
+            args.daily_loss_limit
+        ));
+        lines.push(String::new());
+        lines.extend(self.capital_lines(self.start_equity, mid));
+        lines.extend(self.outside_section(mid));
+        lines.push(String::new());
+        lines.push(self.totals.summary(
+            q,
+            Some(self.start_equity),
+            Some((self.day_pnl, self.day_trades)),
+        ));
+        lines.join("\n")
+    }
+
     async fn evaluate(&mut self) -> Result<()> {
         if self.halted.is_some() || self.paused_until.is_some_and(|t| Instant::now() < t) {
             self.cancel_quotes();

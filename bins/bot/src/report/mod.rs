@@ -130,13 +130,22 @@ async fn books() -> Option<[Book; 3]> {
 }
 
 pub fn daily_due(data_dir: &Path, now: f64) -> Option<PathBuf> {
-    if pl_hour(now) != DAILY_HOUR_PL {
+    daily_due_after(data_dir, now, 0.0)
+}
+
+pub fn daily_due_after(data_dir: &Path, now: f64, grace_ms: f64) -> Option<PathBuf> {
+    if pl_hour(now) != DAILY_HOUR_PL || now.rem_euclid(HOUR_MS) < grace_ms {
         return None;
     }
     let dir = data_dir.join("reports");
     fs::create_dir_all(&dir).ok()?;
     let marker = dir.join(format!(".telegram-{}", pl_time(now, "%Y-%m-%d")));
-    (!marker.exists()).then_some(marker)
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .ok()?;
+    Some(marker)
 }
 
 pub fn save(data_dir: &Path, report: &Report, until: f64) -> Result<PathBuf> {
@@ -435,9 +444,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("arbibot-daily-{}", std::process::id()));
         let eight = 1_791_784_800_000.0;
         let marker = daily_due(&dir, eight).expect("8:00 czasu polskiego");
-        fs::write(&marker, "").unwrap();
+        assert!(marker.exists());
         assert!(daily_due(&dir, eight + 60_000.0).is_none());
+        assert!(daily_due_after(&dir, eight + 11.0 * 60_000.0, 600_000.0).is_none());
         assert!(daily_due(&dir, eight - HOUR_MS).is_none());
         fs::remove_dir_all(&dir).unwrap();
+
+        let fallback = dir.with_extension("fallback");
+        assert!(daily_due_after(&fallback, eight + 5.0 * 60_000.0, 600_000.0).is_none());
+        assert!(daily_due_after(&fallback, eight + 11.0 * 60_000.0, 600_000.0).is_some());
+        fs::remove_dir_all(&fallback).unwrap();
     }
 }

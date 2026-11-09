@@ -4,14 +4,17 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::rebalance::trade_rebalance_need;
-use super::{Engine, SIZE_MARGIN, VENUES, amount, clock};
+use super::totals::signed;
+use super::{BYBIT, Engine, Holding, OKX, SIZE_MARGIN, VENUES, amount, clock};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
+use crate::report::pl_time;
 use crate::{report, selector};
 
 const STALL_MS: f64 = 3_000.0;
 const PAUSE_AFTER_STALL: Duration = Duration::from_secs(30);
 const DAY_MS: f64 = 86_400_000.0;
+const LIVE_REPORT_GRACE_MS: f64 = 600_000.0;
 
 impl Engine {
     pub(super) fn check_loss_limit(&mut self) -> Result<()> {
@@ -81,12 +84,12 @@ impl Engine {
         if day != self.day {
             let equity = self.mid().map(|mid| self.inventory.equity(mid));
             self.tell(format!(
-                "dzień {} zakończony: transakcje {}, wynik {:+.4} {}. {}",
+                "Dzień {} (UTC) zakończony: wynik {} {} z {} transakcji.\n\n{}",
                 self.day,
-                self.day_trades,
-                self.day_pnl,
+                signed(self.day_pnl, 4),
                 self.market.quote,
-                self.totals.summary(&self.market.quote, equity)
+                self.day_trades,
+                self.totals.summary(&self.market.quote, equity, None)
             ));
             self.day = day;
             self.day_pnl = 0.0;
@@ -106,7 +109,7 @@ impl Engine {
         if self.live.is_none() {
             return;
         }
-        let Some(sent) = report::daily_due(&self.data_dir, now) else {
+        let Some(sent) = report::daily_due_after(&self.data_dir, now, LIVE_REPORT_GRACE_MS) else {
             return;
         };
         let day = sent.to_string_lossy().into_owned();
@@ -133,7 +136,7 @@ impl Engine {
             return Ok(());
         };
         let equity = self.inventory.equity(mid);
-        let mut blocked = String::new();
+        let mut blocked = Vec::new();
         let mut key = String::new();
         if self.live.is_some() {
             let w = self.inventory.wallets;
@@ -147,8 +150,8 @@ impl Engine {
             for d in 0..2 {
                 if w[d].quote < min_trade * (1.0 + SIZE_MARGIN) || w[1 - d].base * mid < min_trade {
                     let can = need.is_some_and(|(short, _)| short == d);
-                    blocked += &format!(
-                        " | brak środków na kup {} → sprzedaj {} ({})",
+                    blocked.push(format!(
+                        "brak środków na kup {} → sprzedaj {} ({})",
                         VENUES[d].name(),
                         VENUES[1 - d].name(),
                         blocked_hint(
@@ -158,18 +161,19 @@ impl Engine {
                             can,
                             self.rebalance_max_cost_bps
                         )
-                    );
+                    ));
                     key += &format!("{d}{can} ");
                 }
             }
         }
         if key != self.last_blocked {
             if !blocked.is_empty() {
-                self.tell(blocked.trim_start_matches(" | ").replace(" | ", "\n"));
+                self.tell(blocked.join("\n"));
             }
             self.last_blocked = key;
         }
         let s = &self.stats;
+        let gaps = [0, 1].map(|v| self.books[v].borrow().gaps);
         let mut extra = String::new();
         if self.trade_rebalance {
             extra += &format!(
@@ -183,16 +187,19 @@ impl Engine {
                 s.maker_fills, s.maker_hedges, s.hedge_misses, s.maker_pnl
             );
         }
-        let gaps = [0, 1].map(|v| self.books[v].borrow().gaps);
         if gaps.iter().any(|&g| g > 0) {
             extra += &format!(" | luki książek OKX {} / Bybit {}", gaps[0], gaps[1]);
         }
         if let Some(reason) = &self.halted {
             extra += &format!(" | ZATRZYMANY: {reason}");
         }
-        let line = format!(
-            "sygnały {} (bez środków {}), transakcje {} (sparowane {}, z resztą {}, puste {}), \
-             zysk {:+.4} {q}, kapitał {:.2} {q} ({:+.2} z cen), rebalanse {}{extra}{blocked}",
+        for b in &blocked {
+            extra += &format!(" | {b}");
+        }
+        println!(
+            "[{}] sygnały {} (bez środków {}), transakcje taker {} (sparowane {}, z resztą {}, \
+             puste {}), zysk {:+.4} {q}, kapitał {:.2} {q} ({:+.2} z cen), rebalanse {}{extra}",
+            clock(),
             s.signals,
             s.no_funds,
             s.trades,
@@ -201,24 +208,12 @@ impl Engine {
             s.unfilled,
             s.pnl,
             equity,
-            equity - self.start_equity - s.pnl,
+            equity - self.start_equity - s.pnl - s.outside_change,
             s.rebalances,
             q = self.market.quote
         );
-        println!("[{}] {line}", clock());
         if let Some(telegram) = &self.telegram {
-            telegram.set_status(format!(
-                "{} {}/{}: {line}\n{}\n{}",
-                clock(),
-                self.market.base,
-                self.market.quote,
-                balances(
-                    &self.inventory.wallets,
-                    &self.market.base,
-                    &self.market.quote
-                ),
-                self.totals.summary(&self.market.quote, Some(equity))
-            ));
+            telegram.set_status(self.status_text(mid, equity, &blocked, gaps));
         }
         self.ledger.write(json!({
             "type": "status",
@@ -240,35 +235,164 @@ impl Engine {
             "maker_hedges": s.maker_hedges,
             "maker_pnl": s.maker_pnl,
             "hedge_misses": s.hedge_misses,
+            "outside_change": s.outside_change,
             "halted": self.halted,
             "book_gaps": gaps,
         }))
     }
 
+    fn status_text(&self, mid: f64, equity: f64, blocked: &[String], gaps: [u64; 2]) -> String {
+        let (base, q) = (&self.market.base, &self.market.quote);
+        let s = &self.stats;
+        let now = now_ms();
+        let mut lines = vec![format!(
+            "Stan {} · {base}/{q} · {}",
+            pl_time(now, "%d.%m %H:%M"),
+            if self.live.is_some() {
+                "NA ŻYWO"
+            } else {
+                "na sucho"
+            }
+        )];
+        let mut notes: Vec<String> = self
+            .halted
+            .iter()
+            .map(|reason| format!("ZATRZYMANY: {reason}"))
+            .collect();
+        notes.extend(blocked.iter().cloned());
+        if !notes.is_empty() {
+            lines.push(String::new());
+            lines.push("Uwagi:".to_owned());
+            lines.extend(notes.iter().map(|n| format!("• {n}")));
+        }
+        lines.push(String::new());
+        lines.extend(self.capital_lines(equity, mid));
+
+        let elapsed = self.started.elapsed();
+        lines.push(String::new());
+        lines.push(format!(
+            "Od restartu ({}, {}):",
+            pl_time(now - elapsed.as_secs_f64() * 1e3, "%d.%m %H:%M"),
+            duration(elapsed.as_secs())
+        ));
+        lines.push(format!("• zysk z arbitrażu: {} {q}", signed(s.pnl, 4)));
+        if self.maker.is_some() {
+            lines.push(format!(
+                "• maker: wypełnienia {} na {}, zabezpieczenia {} na {} (nietrafione {}), wynik {} {q}",
+                s.maker_fills,
+                VENUES[OKX].name(),
+                s.maker_hedges,
+                VENUES[BYBIT].name(),
+                s.hedge_misses,
+                signed(s.maker_pnl, 4)
+            ));
+        }
+        lines.push(format!(
+            "• taker: transakcje {} (sparowane {}, z resztą {}, puste {}), sygnały {} (bez środków {})",
+            s.trades, s.matched, s.with_remainder, s.unfilled, s.signals, s.no_funds
+        ));
+        if self.trade_rebalance {
+            lines.push(format!(
+                "• rebalans handlem: {} ({} {q})",
+                s.rebalance_trades,
+                signed(s.rebalance_trade_pnl, 4)
+            ));
+        }
+        if s.rebalances > 0 {
+            lines.push(format!(
+                "• rebalans przelewem: {} (koszt {:.4} {q})",
+                s.rebalances, s.rebalance_cost
+            ));
+        }
+        if s.outside_change != 0.0 {
+            lines.push(format!(
+                "• zmiany sald poza botem: {} {q}",
+                signed(s.outside_change, 2)
+            ));
+        }
+        lines.push(format!(
+            "• zmiana cen {base}: {} {q}",
+            signed(equity - self.start_equity - s.pnl - s.outside_change, 2)
+        ));
+        if gaps.iter().any(|&g| g > 0) {
+            lines.push(format!(
+                "• przerwy w danych książek: {} {}, {} {}",
+                VENUES[OKX].name(),
+                gaps[0],
+                VENUES[BYBIT].name(),
+                gaps[1]
+            ));
+        }
+        lines.extend(self.outside_section(mid));
+        lines.push(String::new());
+        lines.push(
+            self.totals
+                .summary(q, Some(equity), Some((self.day_pnl, self.day_trades))),
+        );
+        lines.join("\n")
+    }
+
+    pub(super) fn capital_lines(&self, equity: f64, mid: f64) -> Vec<String> {
+        let (base, q) = (&self.market.base, &self.market.quote);
+        let mut lines = vec![format!(
+            "Kapitał bota: {equity:.2} {q} ({base} i {q} na kontach handlowych, {base} po {mid:.6})"
+        )];
+        lines.extend(
+            balances(&self.inventory.wallets, base, q)
+                .into_iter()
+                .map(|b| format!("• {b}")),
+        );
+        lines
+    }
+
+    pub(super) fn outside_section(&self, mid: f64) -> Vec<String> {
+        let held = outside_lines(&self.outside, &self.market.base, &self.market.quote, mid);
+        if held.is_empty() {
+            return held;
+        }
+        let mut lines = vec![
+            String::new(),
+            "Poza botem (nie wchodzi do kapitału bota):".to_owned(),
+        ];
+        lines.extend(held.into_iter().map(|h| format!("• {h}")));
+        lines
+    }
+
     pub(super) fn summary(&mut self) -> Result<()> {
         self.status()?;
-        let hours = self.started.elapsed().as_secs_f64() / 3600.0;
+        let elapsed = self.started.elapsed();
+        let hours = elapsed.as_secs_f64() / 3600.0;
         let s = &self.stats;
         let q = &self.market.quote;
-
-        let per_hour = if hours >= 1.0 {
-            format!("; na godzinę {:+.4} {q}", s.pnl / hours)
-        } else {
-            String::new()
-        };
-        let line = format!(
-            "Podsumowanie ({hours:.1} h): transakcje {}, zysk z arbitrażu {:+.4} {q} \
-             (w tym maker {:+.4} z {} zabezpieczeń, koszt rebalansu {:.4}, zmian pary {} za {:.4}){per_hour}.",
-            s.trades,
-            s.pnl,
-            s.maker_pnl,
-            s.maker_hedges,
-            s.rebalance_cost,
-            s.switches,
-            s.switch_cost,
-        );
-        println!("\n{line}");
-        self.tell(format!("koniec pracy. {line}"));
+        let mut lines = vec![format!("Koniec pracy po {}:", duration(elapsed.as_secs()))];
+        let mut profit = format!("• zysk z arbitrażu: {} {q}", signed(s.pnl, 4));
+        if hours >= 1.0 {
+            profit += &format!(", na godzinę {} {q}", signed(s.pnl / hours, 4));
+        }
+        lines.push(profit);
+        if self.maker.is_some() {
+            lines.push(format!(
+                "• maker: zabezpieczenia {}, wynik {} {q}",
+                s.maker_hedges,
+                signed(s.maker_pnl, 4)
+            ));
+        }
+        lines.push(format!("• taker: transakcje {}", s.trades));
+        if s.rebalances > 0 {
+            lines.push(format!(
+                "• rebalans przelewem: {} (koszt {:.4} {q})",
+                s.rebalances, s.rebalance_cost
+            ));
+        }
+        if s.switches > 0 {
+            lines.push(format!(
+                "• zmiany pary: {} (koszt {:.4} {q})",
+                s.switches, s.switch_cost
+            ));
+        }
+        let text = lines.join("\n");
+        println!("\n{text}");
+        self.tell(text);
         Ok(())
     }
 }
@@ -299,8 +423,8 @@ fn blocked_hint(
     }
 }
 
-fn balances(wallets: &[Wallet; 2], base: &str, quote: &str) -> String {
-    let parts: Vec<String> = VENUES
+fn balances(wallets: &[Wallet; 2], base: &str, quote: &str) -> Vec<String> {
+    VENUES
         .iter()
         .zip(wallets)
         .map(|(v, w)| {
@@ -311,8 +435,54 @@ fn balances(wallets: &[Wallet; 2], base: &str, quote: &str) -> String {
                 w.quote
             )
         })
-        .collect();
-    format!("Salda: {}", parts.join(", "))
+        .collect()
+}
+
+fn outside_lines(held: &[Vec<Holding>; 2], base: &str, quote: &str, mid: f64) -> Vec<String> {
+    let mut rows: Vec<(Option<f64>, String)> = Vec::new();
+    for (venue, list) in VENUES.iter().zip(held) {
+        for h in list {
+            let (value, unit) = if h.asset == base {
+                (Some(h.qty * mid), quote)
+            } else if h.asset == quote {
+                (Some(h.qty), quote)
+            } else {
+                (h.usd, "USD")
+            };
+            if value.is_some_and(|v| v < 1.0) {
+                continue;
+            }
+            let account = match h.account {
+                "funding" => "konto funding",
+                _ => "konto handlowe",
+            };
+            let worth = match value {
+                Some(v) if h.asset != quote => format!(" ≈ {v:.2} {unit}"),
+                Some(_) => String::new(),
+                None => " (bez wyceny)".to_owned(),
+            };
+            let qty = if h.asset == quote {
+                format!("{:.2}", h.qty)
+            } else {
+                amount(h.qty, 4)
+            };
+            rows.push((
+                value,
+                format!("{}, {account}: {qty} {}{worth}", venue.name(), h.asset),
+            ));
+        }
+    }
+    rows.sort_by(|a, b| b.0.unwrap_or(-1.0).total_cmp(&a.0.unwrap_or(-1.0)));
+    rows.into_iter().map(|(_, line)| line).collect()
+}
+
+fn duration(secs: u64) -> String {
+    let (days, hours, mins) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60);
+    match (days, hours) {
+        (0, 0) => format!("{mins} min"),
+        (0, _) => format!("{hours} h {mins} min"),
+        _ => format!("{days} d {hours} h"),
+    }
 }
 
 #[cfg(test)]
@@ -351,11 +521,56 @@ mod tests {
         ];
         assert_eq!(
             balances(&wallets, "ARB", "USDC"),
-            format!(
-                "Salda: {}: 592.1960 ARB i 22.36 USDC, {}: 0.0000 ARB i 80.93 USDC",
-                VENUES[0].name(),
-                VENUES[1].name()
-            )
+            [
+                format!("{}: 592.1960 ARB i 22.36 USDC", VENUES[0].name()),
+                format!("{}: 0.0000 ARB i 80.93 USDC", VENUES[1].name()),
+            ]
         );
+    }
+
+    #[test]
+    fn outside_holdings_are_valued_and_dust_is_hidden() {
+        let hold = |account, asset: &str, qty, usd| Holding {
+            account,
+            asset: asset.to_owned(),
+            qty,
+            usd,
+        };
+        let held = [
+            vec![
+                hold("trading", "STRK", 190.12, Some(32.104)),
+                hold("trading", "PEPE", 1000.0, Some(0.01)),
+                hold("funding", "USDC", 5.0, None),
+            ],
+            vec![
+                hold("funding", "ARB", 10.0, None),
+                hold("funding", "XYZ", 3.0, None),
+            ],
+        ];
+        assert_eq!(
+            outside_lines(&held, "ARB", "USDC", 0.18),
+            [
+                format!(
+                    "{}, konto handlowe: 190.1200 STRK ≈ 32.10 USD",
+                    VENUES[0].name()
+                ),
+                format!("{}, konto funding: 5.00 USDC", VENUES[0].name()),
+                format!(
+                    "{}, konto funding: 10.0000 ARB ≈ 1.80 USDC",
+                    VENUES[1].name()
+                ),
+                format!(
+                    "{}, konto funding: 3.0000 XYZ (bez wyceny)",
+                    VENUES[1].name()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn durations_read_naturally() {
+        assert_eq!(duration(59), "0 min");
+        assert_eq!(duration(2 * 3600 + 18 * 60), "2 h 18 min");
+        assert_eq!(duration(3 * 86_400 + 4 * 3600 + 59), "3 d 4 h");
     }
 }

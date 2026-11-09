@@ -7,13 +7,16 @@ use tokio::time::interval;
 use venues::Venue;
 
 use super::orders::floor_to;
+use super::totals::signed;
 use super::{
-    Accounts, Engine, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, amount, http, run,
+    Accounts, Engine, Holding, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, amount, clock,
+    http, run,
 };
 use crate::inventory::Wallet;
 use crate::paper::Side;
 
 const MAX_LIVE_SIZE: f64 = 50.0;
+const OUTSIDE_CHANGE: f64 = 1.0;
 const KEEP_WARM: Duration = Duration::from_secs(15);
 
 pub async fn live(args: LiveArgs) -> Result<()> {
@@ -97,14 +100,40 @@ impl Engine {
     }
 
     pub(super) async fn resync(&mut self) -> Result<()> {
-        if let Err(e) = self.sync_balances().await
-            && self.halted.is_none()
-        {
-            self.halt(format!(
-                "nie da się odczytać sald ({e:#}) — sprawdź sieć i klucze"
-            ))?;
+        let mid = self.mid();
+        let booked = mid.map(|mid| self.inventory.equity(mid));
+        match self.sync_balances().await {
+            Ok(_) => {
+                if let (Some(mid), Some(booked)) = (mid, booked) {
+                    self.note_outside_change(self.inventory.equity(mid) - booked)?;
+                }
+            }
+            Err(e) if self.halted.is_none() => {
+                self.halt(format!(
+                    "nie da się odczytać sald ({e:#}) — sprawdź sieć i klucze"
+                ))?;
+            }
+            Err(_) => {}
         }
         Ok(())
+    }
+
+    fn note_outside_change(&mut self, change: f64) -> Result<()> {
+        if self.auto.is_some() || change.abs() < OUTSIDE_CHANGE {
+            return Ok(());
+        }
+        self.stats.outside_change += change;
+        self.totals.outside_change(change);
+        let line = format!(
+            "Salda na giełdach zmieniły się poza botem o {} {} (wpłata, wypłata albo ręczna \
+             transakcja). Bot liczy to osobno, nie jako zysk ani zmianę cen.",
+            signed(change, 2),
+            self.market.quote
+        );
+        println!("[{}] {line}", clock());
+        self.tell(line);
+        self.ledger
+            .write(json!({"type": "outside_change", "value": change}))
     }
 
     async fn sync_balances(&mut self) -> Result<[Wallet; 2]> {
@@ -131,6 +160,19 @@ impl Engine {
                 base: sum("funding", &m.base),
                 quote: sum("funding", &m.quote),
             };
+            self.outside[v] = list
+                .iter()
+                .filter(|b| {
+                    b.total > 0.0
+                        && (b.account == "funding" || (b.asset != m.base && b.asset != m.quote))
+                })
+                .map(|b| Holding {
+                    account: b.account,
+                    asset: b.asset.clone(),
+                    qty: b.total,
+                    usd: b.usd,
+                })
+                .collect();
         }
         Ok(funding)
     }

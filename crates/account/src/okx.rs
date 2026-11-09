@@ -54,6 +54,7 @@ impl Okx {
                 asset: d["ccy"].as_str().unwrap_or_default().to_owned(),
                 total: num(&d["cashBal"]).unwrap_or(0.0),
                 available: num(&d["availBal"]).unwrap_or(0.0),
+                usd: num(&d["eqUsd"]),
             });
         }
         for d in funding.as_array().into_iter().flatten() {
@@ -62,6 +63,7 @@ impl Okx {
                 asset: d["ccy"].as_str().unwrap_or_default().to_owned(),
                 total: num(&d["bal"]).unwrap_or(0.0),
                 available: num(&d["availBal"]).unwrap_or(0.0),
+                usd: None,
             });
         }
         Ok(out)

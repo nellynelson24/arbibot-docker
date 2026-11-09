@@ -40,6 +40,7 @@ impl Bybit {
                 asset: c["coin"].as_str().unwrap_or_default().to_owned(),
                 total,
                 available: total - num(&c["locked"]).unwrap_or(0.0),
+                usd: num(&c["usdValue"]),
             });
         }
         for c in funding["balance"].as_array().into_iter().flatten() {
@@ -48,6 +49,7 @@ impl Bybit {
                 asset: c["coin"].as_str().unwrap_or_default().to_owned(),
                 total: num(&c["walletBalance"]).unwrap_or(0.0),
                 available: num(&c["transferBalance"]).unwrap_or(0.0),
+                usd: None,
             });
         }
         Ok(out)
