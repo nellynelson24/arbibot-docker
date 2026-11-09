@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde_json::json;
 
+use super::totals::Kind;
 use super::{Engine, clock};
 
 const TRADE_REBALANCE_COOLDOWN: Duration = Duration::from_secs(600);
@@ -81,7 +82,7 @@ impl Engine {
         self.stats.rebalance_cost += r.cost;
         self.stats.pnl -= r.cost;
         self.day_pnl -= r.cost;
-        self.totals.add(-r.cost, false);
+        self.totals.add(Kind::Rebalance, -r.cost);
         let line = format!(
             "rebalans: {:.4} {} i {:.2} {} w drodze ({} min), koszt {:.4} {}",
             r.base,

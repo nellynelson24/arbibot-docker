@@ -4,9 +4,18 @@ use crate::ledger::now_ms;
 use crate::report::pl_time;
 
 const DAY_MS: f64 = 86_400_000.0;
+const KINDS: [&str; 3] = ["maker", "taker", "rebalanse"];
+
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    Maker,
+    Taker,
+    Rebalance,
+}
 
 #[derive(Default)]
 pub(super) struct Totals {
+    by_kind: [Option<f64>; 3],
     pnl: f64,
     trades: u32,
     since_ms: Option<f64>,
@@ -57,9 +66,13 @@ impl Totals {
                 }
             }
             Some("outside_change") => self.outside_change(row["value"].as_f64().unwrap_or(0.0)),
-            Some("trade" | "maker_hedge") => self.add_at(ts, pnl, true),
-            Some("rebalance_trade") => self.add_at(ts, pnl, false),
-            Some("rebalance") => self.add_at(ts, -row["cost"].as_f64().unwrap_or(0.0), false),
+            Some("outside_correction") => self.deposits += row["value"].as_f64().unwrap_or(0.0),
+            Some("maker_hedge") => self.add_at(ts, Kind::Maker, pnl),
+            Some("trade") => self.add_at(ts, Kind::Taker, pnl),
+            Some("rebalance_trade") => self.add_at(ts, Kind::Rebalance, pnl),
+            Some("rebalance") => {
+                self.add_at(ts, Kind::Rebalance, -row["cost"].as_f64().unwrap_or(0.0))
+            }
             _ => {}
         }
     }
@@ -81,18 +94,28 @@ impl Totals {
         }
     }
 
-    pub(super) fn add(&mut self, pnl: f64, counted: bool) {
-        self.add_at(now_ms(), pnl, counted);
+    pub(super) fn add(&mut self, kind: Kind, pnl: f64) {
+        self.add_at(now_ms(), kind, pnl);
     }
 
-    fn add_at(&mut self, ts: f64, pnl: f64, counted: bool) {
+    fn add_at(&mut self, ts: f64, kind: Kind, pnl: f64) {
         self.pnl += pnl;
         self.pair_pnl += pnl;
         self.events.push((ts, pnl));
-        if counted {
+        *self.by_kind[kind as usize].get_or_insert(0.0) += pnl;
+        if !matches!(kind, Kind::Rebalance) {
             self.trades += 1;
             self.pair_trades += 1;
         }
+    }
+
+    fn breakdown(&self, quote: &str) -> Option<String> {
+        let parts: Vec<String> = KINDS
+            .iter()
+            .zip(self.by_kind)
+            .filter_map(|(name, pnl)| pnl.map(|p| format!("{name} {}", signed(p, 4))))
+            .collect();
+        (parts.len() > 1).then(|| format!("• w tym: {} {quote}", parts.join(", ")))
     }
 
     fn within(&self, now: f64, days: f64) -> f64 {
@@ -154,6 +177,7 @@ impl Totals {
             }
         }
         lines.push(all);
+        lines.extend(self.breakdown(quote));
         if self.pair_since_ms != self.since_ms {
             lines.push(format!(
                 "• na {} od {}: {} {quote} z {} transakcji",
@@ -213,6 +237,15 @@ mod tests {
             json!({"type": "start", "ts_ms": t0 + 120_000.0, "pair": "ARB/USDC", "equity": 150.0}),
         ]);
         assert!((totals.deposits - 50.0).abs() < 1e-9);
+
+        let corrected = Totals::from_ledger(vec![
+            json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC", "equity": 100.0}),
+            json!({"type": "status", "ts_ms": t0 + 60_000.0, "pnl": 0.0, "equity": 90.0}),
+            json!({"type": "outside_correction", "ts_ms": t0 + 90_000.0, "value": -10.0}),
+            json!({"type": "start", "ts_ms": t0 + 120_000.0, "pair": "ARB/USDC", "equity": 90.0}),
+        ]);
+        assert!((corrected.deposits + 10.0).abs() < 1e-9);
+        assert!(corrected.breakdown("USDC").is_none());
     }
 
     #[test]
@@ -240,7 +273,7 @@ mod tests {
             json!({"type": "trade", "ts_ms": t0 + 10.0 * day, "pnl": 0.3}),
         ];
         let mut totals = Totals::from_ledger(rows);
-        totals.add_at(t0 + 10.0 * day, 0.25, true);
+        totals.add_at(t0 + 10.0 * day, Kind::Taker, 0.25);
         let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
         assert!(close(totals.pnl, 0.35) && totals.trades == 4);
         assert!(close(totals.pair_pnl, 0.95) && totals.pair_trades == 3);
@@ -261,6 +294,7 @@ mod tests {
                     "• od {}: +0.3500 USDC z 4 transakcji, średnio +0.0350 USDC/dzień (~0.7% kapitału miesięcznie)",
                     pl_time(t0, "%d.%m")
                 ),
+                "• w tym: maker -0.1000, taker +0.5500, rebalanse -0.1000 USDC",
                 &format!(
                     "• na ARB/USDC od {}: +0.9500 USDC z 3 transakcji",
                     pl_time(t0 + 2.0 * day, "%d.%m")
@@ -277,7 +311,7 @@ mod tests {
 
         let short = totals.summary_at("USDC", None, None, now);
         assert!(!short.contains("Kapitał") && !short.contains("dziś"));
-        assert_eq!(short.lines().count(), 5);
+        assert_eq!(short.lines().count(), 6);
 
         let single = Totals::from_ledger(vec![
             json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC"}),

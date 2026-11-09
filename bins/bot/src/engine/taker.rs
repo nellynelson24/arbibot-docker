@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::orders::floor_to;
+use super::totals::Kind;
 use std::time::Instant;
 
 use super::{BYBIT, Engine, OKX, Plan, REMAINDER_SLIPPAGE, SIZE_MARGIN, VENUES, clock};
@@ -170,7 +171,14 @@ impl Engine {
         }
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
-        self.totals.add(pnl, !rebalancing);
+        self.totals.add(
+            if rebalancing {
+                Kind::Rebalance
+            } else {
+                Kind::Taker
+            },
+            pnl,
+        );
         let notional = plan.qty * plan.buy_limit;
         let mut notes = String::new();
         if let Some(v) = remainder_venue {

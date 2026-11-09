@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::maker_live::LiveMaker;
 use super::orders::{floor_to, side_id};
 use super::taker::books_fresh;
+use super::totals::Kind;
 use super::{BYBIT, Engine, OKX, REMAINDER_SLIPPAGE, VENUES, clock};
 use crate::book::{Book, Trade};
 use crate::inventory::Wallet;
@@ -367,7 +368,7 @@ impl Engine {
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
         self.day_trades += 1;
-        self.totals.add(pnl, true);
+        self.totals.add(Kind::Maker, pnl);
         let notional = maker_cash.abs();
         let line = format!(
             "maker: {} {:.4} {} na OKX EEA, {} na {} po {:.6}: wynik {:+.4} {} ({:+.1} bp)",
