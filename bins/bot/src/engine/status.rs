@@ -79,13 +79,14 @@ impl Engine {
         }
         let day = selector::utc_date(now);
         if day != self.day {
+            let equity = self.mid().map(|mid| self.inventory.equity(mid));
             self.tell(format!(
                 "dzień {} zakończony: transakcje {}, wynik {:+.4} {}. {}",
                 self.day,
                 self.day_trades,
                 self.day_pnl,
                 self.market.quote,
-                self.totals.summary(&self.market.quote)
+                self.totals.summary(&self.market.quote, equity)
             ));
             self.day = day;
             self.day_pnl = 0.0;
@@ -216,7 +217,7 @@ impl Engine {
                     &self.market.base,
                     &self.market.quote
                 ),
-                self.totals.summary(&self.market.quote)
+                self.totals.summary(&self.market.quote, Some(equity))
             ));
         }
         self.ledger.write(json!({

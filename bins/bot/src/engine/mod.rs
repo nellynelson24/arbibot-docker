@@ -309,6 +309,7 @@ impl Engine {
         self.ledger.write(json!({
             "type": "start",
             "mode": mode,
+            "equity": self.start_equity,
             "wallets": self.inventory.wallets.map(|w| [w.base, w.quote]),
             "pair": format!("{}/{}", self.market.base, self.market.quote),
             "capital": args.capital,
@@ -330,10 +331,8 @@ impl Engine {
         }))?;
         self.totals = totals::Totals::from_ledger(self.ledger.history());
         let mut started = format!(
-            "Start {label}: {}/{q}, kapitał {:.2} {q}, transakcja {} {q}, próg {} bp, \
-         dzienny limit straty {} {q}.",
+            "Start {label}: {}/{q}, transakcja {} {q}, próg {} bp, dzienny limit straty {} {q}.",
             self.market.base,
-            self.start_equity,
             args.size,
             args.min_bps,
             args.daily_loss_limit,
@@ -355,7 +354,11 @@ impl Engine {
                 self.day_trades, self.day_pnl, self.market.quote
             );
         }
-        started += &format!(" {}", self.totals.summary(&self.market.quote));
+        started += &format!(
+            "\n{}",
+            self.totals
+                .summary(&self.market.quote, Some(self.start_equity))
+        );
         println!(
             "{started} Zatrzymanie: Ctrl+C lub plik {}.\n",
             self.stop_file.display()
