@@ -122,7 +122,7 @@ impl Totals {
         text += ".";
         if let (Some(e), Some(first)) = (equity, self.first_equity) {
             text += &format!(
-                "\nOd {start}: kapitał początkowy {first:.2}, wpłaty i wypłaty {:+.2}, zmiana cen monet {:+.2} {quote}.",
+                "\nOd {start}: kapitał początkowy {first:.2}, zmiany sald poza botem {:+.2} (wpłaty, wypłaty, zamiany monet), zmiana cen monet {:+.2} {quote}.",
                 self.deposits,
                 e - first - self.deposits - self.pnl
             );
@@ -187,7 +187,7 @@ mod tests {
         assert!(lines[0].contains(" (z 4 transakcji); na ARB/USDC od "));
         assert!(lines[0].ends_with("+0.9500 USDC z 3 transakcji."));
         assert!(lines[1].ends_with(
-            "kapitał początkowy 100.00, wpłaty i wypłaty +60.00, zmiana cen monet -10.00 USDC."
+            "kapitał początkowy 100.00, zmiany sald poza botem +60.00 (wpłaty, wypłaty, zamiany monet), zmiana cen monet -10.00 USDC."
         ));
         assert_eq!(
             lines[2],

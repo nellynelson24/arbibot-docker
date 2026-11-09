@@ -358,7 +358,8 @@ impl Engine {
             maker.filled_at[i] = None;
         }
         let pnl = maker_cash + cash;
-        if fill.qty < qty {
+        let missed = shortfall(qty, fill.qty, step);
+        if missed > 0.0 {
             self.stats.hedge_misses += 1;
         }
         self.stats.maker_hedges += 1;
@@ -397,7 +398,7 @@ impl Engine {
         detail["hedge_price"] = json!(fill.avg_price);
         detail["pnl"] = json!(pnl);
         detail["pnl_bps"] = json!(pnl / notional * 1e4);
-        detail["missed"] = json!(qty - fill.qty);
+        detail["missed"] = json!(missed);
         detail["orders"] = json!(self.take_orders());
         self.ledger.write(detail)?;
         if self.live.is_some() {
@@ -456,9 +457,21 @@ pub(super) fn reserve(
     w
 }
 
+fn shortfall(qty: f64, filled: f64, step: f64) -> f64 {
+    let missed = qty - filled;
+    if missed < step / 2.0 { 0.0 } else { missed }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounding_dust_is_not_a_partial_hedge() {
+        assert_eq!(shortfall(119.8, 119.8 - 1.4210854715202004e-14, 0.1), 0.0);
+        assert_eq!(shortfall(119.8, 119.8, 0.1), 0.0);
+        assert!((shortfall(119.8, 119.5, 0.1) - 0.3).abs() < 1e-9);
+    }
 
     #[test]
     fn only_refused_hedges_are_flattened_and_only_a_few_times_a_day() {

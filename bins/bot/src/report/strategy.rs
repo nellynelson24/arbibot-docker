@@ -4,6 +4,8 @@ use std::fmt::Write as _;
 use super::stats::{mean, pct};
 use super::{MIN_CASES, Run, SAME_SIGNAL_MS, executed, num, text, ts};
 
+const MISSED_DUST: f64 = 1e-9;
+
 pub(super) fn maker_section(runs: &[Run], full: &mut String, advice: &mut Vec<String>) {
     let makers: Vec<&Run> = runs
         .iter()
@@ -39,7 +41,10 @@ pub(super) fn maker_section(runs: &[Run], full: &mut String, advice: &mut Vec<St
             hedges.len(),
             side("buy"),
             side("sell"),
-            hedges.iter().filter(|h| num(h, "missed") > 0.0).count()
+            hedges
+                .iter()
+                .filter(|h| num(h, "missed") > MISSED_DUST)
+                .count()
         );
         if hedges.len() >= 30 {
             if mean_bps > 0.0 && positive * 10 >= hedges.len() * 6 {
