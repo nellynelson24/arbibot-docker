@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde_json::json;
 
+use super::maker::below_minimum;
 use super::orders::floor_to;
 use super::totals::Kind;
 use std::time::Instant;
@@ -108,6 +109,11 @@ impl Engine {
             (Ok(buy), Ok(sell)) => (buy, sell),
             (buy, sell) => {
                 let done = filled_legs([(b, Side::Buy, &buy), (s, Side::Sell, &sell)]);
+                self.book_lone_legs(
+                    [(b, Side::Buy, &buy), (s, Side::Sell, &sell)],
+                    &plan,
+                    rebalancing,
+                )?;
                 let errors: Vec<String> = [buy.err(), sell.err()]
                     .into_iter()
                     .flatten()
@@ -130,7 +136,11 @@ impl Engine {
         let mut remainder = Fill::default();
         let mut remainder_venue = None;
         if excess.abs() >= self.market.step / 2.0 {
-            match self.close_remainder(excess).await {
+            let cap = (rebalancing && self.rebalance_strict).then_some(match excess > 0.0 {
+                true => plan.sell_limit,
+                false => plan.buy_limit,
+            });
+            match self.close_remainder(excess, cap).await {
                 Ok(Some((v, fill, cash))) => {
                     remainder = fill;
                     remainder_venue = Some(v);
@@ -171,6 +181,9 @@ impl Engine {
         let filled = buy.qty.max(sell.qty) > 0.0;
         if filled && !rebalancing {
             self.day_trades += 1;
+        }
+        if rebalancing && !filled && self.rebalance_strict {
+            self.release_rebalance_slot();
         }
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
@@ -287,7 +300,9 @@ impl Engine {
         if first == b {
             let buy = self.ioc(b, Side::Buy, plan.qty, plan.buy_limit).await;
             let sell = match &buy {
-                Ok(bought) if bought.qty >= half_step => {
+                Ok(bought)
+                    if bought.qty >= half_step && self.tradable(bought.qty, bought.avg_price) =>
+                {
                     let floor = match rebalancing {
                         true => plan.sell_limit,
                         false => break_even_sell(bought.avg_price, fee_b, fee_s),
@@ -300,7 +315,7 @@ impl Engine {
         } else {
             let sell = self.ioc(s, Side::Sell, plan.qty, plan.sell_limit).await;
             let buy = match &sell {
-                Ok(sold) if sold.qty >= half_step => {
+                Ok(sold) if sold.qty >= half_step && self.tradable(sold.qty, sold.avg_price) => {
                     let affordable = self.free()[b].quote / (sold.qty * (1.0 + fee_b));
                     let cap = match rebalancing {
                         true => plan.buy_limit,
@@ -316,9 +331,72 @@ impl Engine {
         }
     }
 
-    async fn close_remainder(&mut self, excess: f64) -> Result<Option<(usize, Fill, f64)>> {
+    fn tradable(&self, qty: f64, price: f64) -> bool {
+        let m = &self.market;
+        !below_minimum(qty, price, m.step, (m.min_qty, m.min_notional))
+    }
+
+    fn book_lone_legs(
+        &mut self,
+        legs: [(usize, Side, &Result<Fill>); 2],
+        plan: &Plan,
+        rebalancing: bool,
+    ) -> Result<()> {
+        let mut pnl = 0.0;
+        let mut fills = [Fill::default(), Fill::default()];
+        for (i, (venue, side, leg)) in legs.into_iter().enumerate() {
+            let (Ok(fill), Some(mid)) = (leg, self.books[venue].borrow().mid()) else {
+                continue;
+            };
+            if fill.qty <= 0.0 {
+                continue;
+            }
+            let fee = self.market.fees[venue].taker;
+            self.inventory.wallets[venue].book(side, fill.qty, fill.value(), fee);
+            pnl += lone_leg_pnl(side, fill.qty, fill.value(), fee, mid);
+            fills[i] = *fill;
+        }
+        if fills.iter().all(|f| f.qty <= 0.0) {
+            return Ok(());
+        }
+        self.stats.pnl += pnl;
+        self.day_pnl += pnl;
+        self.totals.add(
+            if rebalancing {
+                Kind::Rebalance
+            } else {
+                self.day_trades += 1;
+                Kind::Taker
+            },
+            pnl,
+        );
+        let [buy, sell] = fills;
+        self.ledger.write(json!({
+            "type": if rebalancing { "rebalance_trade" } else { "trade" },
+            "buy": VENUES[legs[0].0].id(),
+            "sell": VENUES[legs[1].0].id(),
+            "qty": plan.qty,
+            "expected_bps": plan.expected_bps,
+            "buy_fill": [buy.qty, buy.avg_price],
+            "sell_fill": [sell.qty, sell.avg_price],
+            "pnl": pnl,
+            "pnl_bps": bps(pnl, buy.qty.max(sell.qty) * plan.buy_limit),
+            "outcome": "jedna noga",
+            "orders": self.take_orders(),
+        }))
+    }
+
+    async fn close_remainder(
+        &mut self,
+        excess: f64,
+        cap: Option<f64>,
+    ) -> Result<Option<(usize, Fill, f64)>> {
         let side = if excess > 0.0 { Side::Sell } else { Side::Buy };
         let qty = excess.abs();
+        let price = self.mid().unwrap_or(f64::MAX);
+        if !self.tradable(qty, price) {
+            return Ok(None);
+        }
         let Some((venue, _, limit)) = (0..2)
             .filter_map(|v| {
                 let book = self.books[v].borrow();
@@ -327,12 +405,14 @@ impl Engine {
                 match side {
                     Side::Sell => {
                         let (avg, _) = book.sell_fill(qty)?;
-                        let limit = book.bids.first()?.0 * (1.0 - REMAINDER_SLIPPAGE);
+                        let limit =
+                            cap.unwrap_or(book.bids.first()?.0 * (1.0 - REMAINDER_SLIPPAGE));
                         (wallet.base >= qty).then_some((v, avg * (1.0 - fee), limit))
                     }
                     Side::Buy => {
                         let (avg, _) = book.buy_fill(qty)?;
-                        let limit = book.asks.first()?.0 * (1.0 + REMAINDER_SLIPPAGE);
+                        let limit =
+                            cap.unwrap_or(book.asks.first()?.0 * (1.0 + REMAINDER_SLIPPAGE));
                         let cost = qty * limit * (1.0 + fee);
                         (wallet.quote >= cost).then_some((v, -avg * (1.0 + fee), limit))
                     }
@@ -361,6 +441,13 @@ fn skew(room: [f64; 2], skew_bps: f64) -> [f64; 2] {
     }
     let cap = skew_bps.abs();
     [0, 1].map(|d| (skew_bps * (room[d] - room[1 - d]) / total).clamp(-cap, cap))
+}
+
+fn lone_leg_pnl(side: Side, qty: f64, value: f64, fee: f64, mid: f64) -> f64 {
+    match side {
+        Side::Buy => qty * mid - value * (1.0 + fee),
+        Side::Sell => value * (1.0 - fee) - qty * mid,
+    }
 }
 
 fn bps(pnl: f64, notional: f64) -> f64 {
@@ -487,6 +574,13 @@ mod tests {
         assert_eq!(skew([-18.0, 22.0], 15.0), [-15.0, 15.0]);
         assert_eq!(skew([-30.0, 10.0], 15.0), [-15.0, 15.0]);
         assert_eq!(skew([-5.0, -5.0], 15.0), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_lone_leg_is_valued_at_the_market_with_its_fee() {
+        assert!((lone_leg_pnl(Side::Buy, 100.0, 18.0, 0.0025, 0.18) + 0.045).abs() < 1e-9);
+        assert!((lone_leg_pnl(Side::Sell, 100.0, 18.0, 0.0025, 0.18) + 0.045).abs() < 1e-9);
+        assert!((lone_leg_pnl(Side::Buy, 100.0, 18.0, 0.0, 0.181) - 0.1).abs() < 1e-9);
     }
 
     #[test]

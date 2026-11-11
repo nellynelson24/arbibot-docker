@@ -1,22 +1,24 @@
 use std::time::Duration;
 
-use account::{Bybit, Credentials, Okx, Scope};
+use account::{Bybit, Credentials, KeyRights, Okx, Scope};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
-use tokio::time::interval;
+use tokio::time::{interval, sleep};
 use venues::Venue;
 
 use super::orders::floor_to;
 use super::totals::signed;
 use super::{
-    Accounts, Engine, Holding, INVENTORY_SLIPPAGE, LiveArgs, SIZE_MARGIN, VENUES, amount, clock,
-    http, run,
+    Accounts, Engine, Holding, INVENTORY_SLIPPAGE, LiveArgs, LiveStart, SIZE_MARGIN, VENUES,
+    amount, clock, http, run,
 };
 use crate::inventory::Wallet;
 use crate::paper::Side;
 
 const MAX_LIVE_SIZE: f64 = 50.0;
 const OUTSIDE_CHANGE: f64 = 1.0;
+const BALANCE_ATTEMPTS: u32 = 3;
+const BALANCE_RETRY: Duration = Duration::from_secs(2);
 const KEEP_WARM: Duration = Duration::from_secs(15);
 
 pub async fn live(args: LiveArgs) -> Result<()> {
@@ -33,7 +35,7 @@ pub async fn live(args: LiveArgs) -> Result<()> {
     keep_warm(http.clone());
     let trade = Accounts {
         okx: Okx::new(http.clone(), Credentials::load(Venue::Okx, Scope::Trade)?),
-        bybit: Bybit::new(http, Credentials::load(Venue::Bybit, Scope::Trade)?),
+        bybit: Bybit::new(http.clone(), Credentials::load(Venue::Bybit, Scope::Trade)?),
     };
     let rights = [
         trade.okx.key_rights().await.context("klucz handlowy OKX")?,
@@ -44,17 +46,35 @@ pub async fn live(args: LiveArgs) -> Result<()> {
             .context("klucz handlowy Bybit")?,
     ];
     for (venue, rights) in VENUES.iter().zip(rights) {
-        if rights.withdraw {
-            bail!(
-                "{}: klucz handlowy ma prawo wypłat — usuń go i utwórz nowy tylko z handlem spot",
+        check_key(venue.name(), &rights, true)?;
+    }
+    let read = [
+        Okx::new(http.clone(), Credentials::load(Venue::Okx, Scope::Read)?)
+            .key_rights()
+            .await,
+        Bybit::new(http.clone(), Credentials::load(Venue::Bybit, Scope::Read)?)
+            .key_rights()
+            .await,
+    ];
+    for (venue, rights) in VENUES.iter().zip(read) {
+        match rights {
+            Ok(rights) => check_key(venue.name(), &rights, false)?,
+            Err(e) => println!(
+                "{}: nie da się sprawdzić praw klucza do odczytu ({e:#})",
                 venue.name()
-            );
-        }
-        if !rights.trade {
-            bail!("{}: klucz nie ma prawa handlu spot", venue.name());
+            ),
         }
     }
-    run(args.common, Some((trade, args.buy_inventory, args.yes))).await
+    run(
+        args.common,
+        Some(LiveStart {
+            accounts: trade,
+            buy_inventory: args.buy_inventory,
+            confirmed: args.yes,
+            hedge_leftovers: args.hedge_leftovers,
+        }),
+    )
+    .await
 }
 
 fn keep_warm(http: reqwest::Client) {
@@ -137,9 +157,12 @@ impl Engine {
     }
 
     async fn sync_balances(&mut self) -> Result<[Wallet; 2]> {
-        let (okx, bybit) =
-            tokio::try_join!(self.accounts.okx.balances(), self.accounts.bybit.balances())
-                .context("odczyt sald")?;
+        let accounts = &self.accounts;
+        let (okx, bybit) = retry(BALANCE_ATTEMPTS, BALANCE_RETRY, || async {
+            tokio::try_join!(accounts.okx.balances(), accounts.bybit.balances())
+        })
+        .await
+        .context("odczyt sald")?;
         let m = &self.market;
         let mut funding = [Wallet::default(); 2];
         for (v, list) in [okx, bybit].iter().enumerate() {
@@ -273,6 +296,36 @@ impl Engine {
     }
 }
 
+fn check_key(venue: &str, rights: &KeyRights, trading: bool) -> Result<()> {
+    let kind = if trading { "handlowy" } else { "do odczytu" };
+    if rights.withdraw {
+        bail!("{venue}: klucz {kind} ma prawo wypłat — usuń go i utwórz nowy bez wypłat");
+    }
+    if trading && !rights.trade {
+        bail!("{venue}: klucz nie ma prawa handlu spot");
+    }
+    Ok(())
+}
+
+async fn retry<T, F, Fut>(attempts: u32, delay: Duration, mut call: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut tries = 1;
+    loop {
+        match call().await {
+            Ok(value) => return Ok(value),
+            Err(e) if tries >= attempts => return Err(e),
+            Err(e) => {
+                println!("odczyt nieudany ({e:#}), ponawiam");
+                tries += 1;
+                sleep(delay).await;
+            }
+        }
+    }
+}
+
 fn purchase_qty(
     spend: f64,
     ask: f64,
@@ -295,6 +348,36 @@ fn funded(wallets: &[Wallet; 2], mid: f64, min_trade: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_with_withdrawal_rights_are_refused() {
+        let rights = |trade, withdraw| KeyRights { trade, withdraw };
+        assert!(check_key("OKX EEA", &rights(true, false), true).is_ok());
+        assert!(check_key("OKX EEA", &rights(false, false), false).is_ok());
+        assert!(check_key("OKX EEA", &rights(false, true), false).is_err());
+        assert!(check_key("OKX EEA", &rights(true, true), true).is_err());
+        assert!(check_key("OKX EEA", &rights(false, false), true).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_read_that_fails_once_is_retried() {
+        let calls = std::cell::Cell::new(0);
+        let value = retry(3, Duration::ZERO, || {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                if n == 1 {
+                    anyhow::bail!("timeout")
+                }
+                Ok(n)
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 2);
+        let failing: Result<u32> = retry(3, Duration::ZERO, || async { anyhow::bail!("x") }).await;
+        assert!(failing.is_err());
+    }
 
     #[test]
     fn buys_from_a_quarter_of_the_trade_size() {

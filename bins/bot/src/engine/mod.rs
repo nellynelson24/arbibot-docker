@@ -113,6 +113,10 @@ struct Engine {
     restore_min_bps: f64,
     skew_bps: f64,
     lazy_rebalance: bool,
+    hedge_while_paused: bool,
+    hedge_leftovers: bool,
+    last_paused_hedge: Option<Instant>,
+    rebalance_strict: bool,
     missed_since: [Option<Instant>; 2],
     day_rebalances: u32,
     day_failed_hedges: u32,
@@ -171,16 +175,28 @@ fn http() -> Result<reqwest::Client> {
         .build()?)
 }
 
-async fn run(args: Args, live: Option<(Accounts, bool, bool)>) -> Result<()> {
+struct LiveStart {
+    accounts: Accounts,
+    buy_inventory: bool,
+    confirmed: bool,
+    hedge_leftovers: bool,
+}
+
+async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
     let http = http()?;
     let accounts = Accounts {
         okx: Okx::new(http.clone(), Credentials::load(Venue::Okx, Scope::Read)?),
         bybit: Bybit::new(http.clone(), Credentials::load(Venue::Bybit, Scope::Read)?),
     };
     let market = load_market(&args, &http, &accounts).await?;
-    let (live, buy_inventory, confirmed) = match live {
-        Some((trade, buy, yes)) => (Some(trade), buy, yes),
-        None => (None, false, true),
+    let (live, buy_inventory, confirmed, hedge_leftovers) = match live {
+        Some(s) => (
+            Some(s.accounts),
+            s.buy_inventory,
+            s.confirmed,
+            s.hedge_leftovers,
+        ),
+        None => (None, false, true, false),
     };
     let (books, trades) = open_books(&market, args.maker && live.is_none());
     let mid = wait_for_books(&books).await?;
@@ -207,6 +223,10 @@ async fn run(args: Args, live: Option<(Accounts, bool, bool)>) -> Result<()> {
         restore_min_bps: args.restore_min_bps,
         skew_bps: args.skew_bps,
         lazy_rebalance: args.lazy_rebalance,
+        hedge_while_paused: args.hedge_while_paused,
+        hedge_leftovers,
+        last_paused_hedge: None,
+        rebalance_strict: args.rebalance_strict,
         missed_since: [None, None],
         day_rebalances: 0,
         day_failed_hedges: 0,
@@ -357,6 +377,7 @@ impl Engine {
         let review_every = Duration::from_secs_f64(args.review_hours.max(0.01) * 3600.0);
         let mut review = interval_at(tokio::time::Instant::now() + review_every, review_every);
         let mut transfers = interval(transfer::CHECK_EVERY);
+        let mut sweep = interval(maker_live::SWEEP_EVERY);
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
         'run: loop {
@@ -365,9 +386,12 @@ impl Engine {
             let mut maker_events = self.maker_events.take();
             loop {
                 tokio::select! {
-                    _ = &mut shutdown => break 'run,
+                    _ = &mut shutdown => {
+                        self.maker_events = maker_events.take();
+                        break 'run;
+                    }
                     Some(trade) = next(&mut trades) => self.on_trade(trade).await?,
-                Some(event) = next(&mut maker_events) => self.on_maker_event(event).await?,
+                    Some(event) = next(&mut maker_events) => self.on_maker_event(event).await?,
                     changed = okx_changes.changed() => {
                         changed.context("feed OKX zakończony")?;
                         self.evaluate().await?;
@@ -378,6 +402,7 @@ impl Engine {
                     }
                     _ = tick.tick() => self.tick()?,
                     _ = status.tick() => self.status()?,
+                    _ = sweep.tick(), if self.live.is_some() => self.sweep_orders().await?,
                     _ = transfers.tick(), if self.auto.is_some() => self.transfer_step().await,
                     _ = review.tick(), if self.switching => match self.review().await {
                         Ok(true) => continue 'run,
@@ -426,6 +451,15 @@ impl Engine {
                 args.skew_bps
             ));
         }
+        if args.rebalance_strict {
+            lines.push(
+                "• rebalans ścisły: reszta z limitem z planu, puste próby nie zużywają limitu"
+                    .to_owned(),
+            );
+        }
+        if args.hedge_while_paused {
+            lines.push("• zabezpieczenia makera także w pauzie i po zatrzymaniu".to_owned());
+        }
         lines.push(format!(
             "• dzienny limit straty: {} {q}",
             args.daily_loss_limit
@@ -445,6 +479,18 @@ impl Engine {
     async fn evaluate(&mut self) -> Result<()> {
         if self.halted.is_some() || self.paused_until.is_some_and(|t| Instant::now() < t) {
             self.cancel_quotes();
+            if self.maker.is_some()
+                && paused_hedge_due(
+                    self.hedge_while_paused,
+                    self.last_paused_hedge,
+                    Instant::now(),
+                )
+            {
+                self.last_paused_hedge = Some(Instant::now());
+                for side in [Side::Buy, Side::Sell] {
+                    self.hedge(side).await?;
+                }
+            }
             return Ok(());
         }
         if self.maker.is_some() {
@@ -474,6 +520,12 @@ impl Engine {
             telegram.send(text);
         }
     }
+}
+
+const PAUSED_HEDGE_EVERY: Duration = Duration::from_secs(10);
+
+fn paused_hedge_due(enabled: bool, last: Option<Instant>, now: Instant) -> bool {
+    enabled && last.is_none_or(|t| now.saturating_duration_since(t) >= PAUSED_HEDGE_EVERY)
 }
 
 async fn wait_for_books(books: &[watch::Receiver<Book>; 2]) -> Result<f64> {
@@ -522,6 +574,23 @@ fn clock() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_hedges_are_opt_in_and_spaced_out() {
+        let now = Instant::now();
+        assert!(!paused_hedge_due(false, None, now));
+        assert!(paused_hedge_due(true, None, now));
+        assert!(!paused_hedge_due(
+            true,
+            Some(now - Duration::from_secs(3)),
+            now
+        ));
+        assert!(paused_hedge_due(
+            true,
+            Some(now - Duration::from_secs(11)),
+            now
+        ));
+    }
 
     #[test]
     fn amounts_never_show_negative_zero() {

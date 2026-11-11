@@ -11,6 +11,7 @@ const LAZY_COOLDOWN: Duration = Duration::from_secs(1800);
 const LAZY_MISSED_WITHIN: Duration = Duration::from_secs(3600);
 const LAZY_PER_DAY: u32 = 4;
 const BLOCKED_FOR: Duration = Duration::from_secs(900);
+const UNFILLED_RETRY: Duration = Duration::from_secs(60);
 
 impl Engine {
     pub(super) async fn rebalance_by_trade(&mut self) -> Result<()> {
@@ -63,6 +64,15 @@ impl Engine {
         self.trade(reverse, plan, true).await
     }
 
+    pub(super) fn release_rebalance_slot(&mut self) {
+        let cooldown = match self.lazy_rebalance {
+            true => LAZY_COOLDOWN,
+            false => TRADE_REBALANCE_COOLDOWN,
+        };
+        (self.day_rebalances, self.last_trade_rebalance) =
+            after_unfilled(self.day_rebalances, cooldown, Instant::now());
+    }
+
     pub(super) fn rebalance(&mut self) -> Result<()> {
         self.inventory.settle();
         if self.trade_rebalance {
@@ -105,6 +115,13 @@ impl Engine {
     }
 }
 
+fn after_unfilled(day_rebalances: u32, cooldown: Duration, now: Instant) -> (u32, Option<Instant>) {
+    (
+        day_rebalances.saturating_sub(1),
+        now.checked_sub(cooldown.saturating_sub(UNFILLED_RETRY)),
+    )
+}
+
 fn lazy_allows(missed: Option<Instant>, today: u32, now: Instant) -> bool {
     today < LAZY_PER_DAY
         && missed.is_some_and(|t| now.saturating_duration_since(t) <= LAZY_MISSED_WITHIN)
@@ -132,6 +149,16 @@ mod tests {
         assert!(!lazy_allows(Some(now), LAZY_PER_DAY, now));
         let later = now + LAZY_MISSED_WITHIN + Duration::from_secs(1);
         assert!(!lazy_allows(Some(now), 0, later));
+    }
+
+    #[test]
+    fn an_unfilled_rebalance_keeps_the_daily_quota_and_retries_after_a_minute() {
+        let now = Instant::now();
+        let (count, last) = after_unfilled(2, LAZY_COOLDOWN, now);
+        assert_eq!(count, 1);
+        let waited = now.saturating_duration_since(last.unwrap());
+        assert_eq!(LAZY_COOLDOWN - waited, UNFILLED_RETRY);
+        assert_eq!(after_unfilled(0, LAZY_COOLDOWN, now).0, 0);
     }
 
     #[test]

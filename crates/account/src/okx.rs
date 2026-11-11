@@ -301,6 +301,18 @@ impl Okx {
             .collect())
     }
 
+    pub async fn recent_orders(&self, base: &str, quote: &str) -> Result<Vec<(OrderUpdate, f64)>> {
+        let path =
+            format!("/api/v5/trade/orders-history?instType=SPOT&instId={base}-{quote}&limit=100");
+        let data = self.get(&path).await?;
+        Ok(data
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| Some((parse_update(d)?, num(&d["cTime"])?)))
+            .collect())
+    }
+
     pub async fn cancel_all_after(&self, secs: u32) -> Result<()> {
         let body = json!({"timeOut": secs.to_string()});
         self.post("/api/v5/trade/cancel-all-after", &body.to_string())

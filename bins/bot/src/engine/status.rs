@@ -46,6 +46,14 @@ impl Engine {
         Ok(())
     }
 
+    pub(super) fn halt_once(&mut self, reason: String) -> Result<()> {
+        if self.halted.is_some() {
+            println!("[{}] {reason}", clock());
+            return Ok(());
+        }
+        self.halt(reason)
+    }
+
     pub(super) fn restore_day(&mut self) {
         let day = Day::from_rows(&self.ledger.today());
         self.day_pnl += day.pnl;

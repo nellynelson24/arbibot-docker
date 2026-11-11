@@ -18,6 +18,7 @@ const SEND_RETRY: Duration = Duration::from_secs(2);
 const POLL_RETRY: Duration = Duration::from_secs(10);
 const CONFLICT_RETRY: Duration = Duration::from_secs(60);
 const MAX_CHARS: usize = 4096;
+const PENDING_STOP_SECS: i64 = 300;
 const CONFLICT_NOTE: &str = "Polecenia /stan i /stop chwilowo nie działają: Telegram podaje, że \
      odbiera je inny proces z tym samym tokenem (kod 409). Ponawiam co minutę.";
 const HELP: &str = "Polecenia: /stan — stan bota, /stop — zatrzymanie handlu (plik STOP)";
@@ -172,20 +173,34 @@ impl Telegram {
 }
 
 async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop_file: PathBuf) {
+    let owner: Option<i64> = telegram.chat_id.trim().parse().ok();
     let mut conflict_noted = false;
-    let mut offset = loop {
-        match telegram
-            .call("getUpdates", json!({"offset": -1, "timeout": 0}))
-            .await
-        {
-            Ok(updates) => break updates[0]["update_id"].as_i64().map_or(0, |id| id + 1),
+    let pending = loop {
+        match telegram.call("getUpdates", json!({"timeout": 0})).await {
+            Ok(updates) => break updates,
             Err(e) => {
                 note_poll_error(&telegram, &e, &mut conflict_noted).await;
                 sleep(retry_in(&e, POLL_RETRY).unwrap_or(POLL_RETRY)).await;
             }
         }
     };
-    let owner: Option<i64> = telegram.chat_id.trim().parse().ok();
+    let mut offset = pending
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u["update_id"].as_i64())
+        .max()
+        .map_or(0, |id| id + 1);
+    if pending_stop(&pending, owner, (crate::ledger::now_ms() / 1000.0) as i64) {
+        let reply = match std::fs::write(&stop_file, "") {
+            Ok(()) => "Wykonano /stop wysłane w trakcie restartu: handel wstrzymany (plik STOP)."
+                .to_owned(),
+            Err(e) => format!("Nie udało się utworzyć pliku STOP: {e}"),
+        };
+        if let Err(e) = telegram.send(&reply).await {
+            eprintln!("Telegram: {e:#}");
+        }
+    }
     let viewers: Vec<i64> = telegram
         .viewers
         .iter()
@@ -223,6 +238,7 @@ async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop
                 continue;
             };
             let is_owner = Some(chat) == owner;
+            let may_stop = message["from"]["id"].as_i64() == owner;
             if !is_owner && !viewers.contains(&chat) {
                 if reported.insert(chat) {
                     let name = message["chat"]["username"]
@@ -251,7 +267,7 @@ async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop
                 .unwrap_or_default();
             let reply = match command {
                 "/stan" | "/status" => status.borrow().clone(),
-                "/stop" if !is_owner => "Tylko właściciel bota może go zatrzymać.".to_owned(),
+                "/stop" if !may_stop => "Tylko właściciel bota może go zatrzymać.".to_owned(),
                 "/stop" => match std::fs::write(&stop_file, "") {
                     Ok(()) => "Zatrzymuję handel (plik STOP). Wznowienie: usuń plik data/STOP \
                                i uruchom bota ponownie."
@@ -266,6 +282,22 @@ async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop
             }
         }
     }
+}
+
+fn pending_stop(updates: &Value, owner: Option<i64>, now: i64) -> bool {
+    updates.as_array().into_iter().flatten().any(|u| {
+        let m = &u["message"];
+        m["from"]["id"].as_i64() == owner
+            && owner.is_some()
+            && m["date"]
+                .as_i64()
+                .is_some_and(|d| now - d <= PENDING_STOP_SECS)
+            && m["text"]
+                .as_str()
+                .and_then(|t| t.split_whitespace().next())
+                .and_then(|c| c.split('@').next())
+                == Some("/stop")
+    })
 }
 
 fn viewers() -> Vec<String> {
@@ -466,6 +498,43 @@ mod tests {
         );
         assert!(is_conflict(&api(409, None)));
         assert!(!is_conflict(&api(429, None)));
+    }
+
+    #[test]
+    fn a_recent_stop_from_the_owner_survives_a_restart() {
+        let msg = |from: i64, text: &str, date: i64| json!({"update_id": 1, "message": {"from": {"id": from}, "chat": {"id": from}, "text": text, "date": date}});
+        let now = 1_794_000_000;
+        let owner = Some(42);
+        assert!(pending_stop(
+            &json!([msg(42, "/stop", now - 60)]),
+            owner,
+            now
+        ));
+        assert!(pending_stop(
+            &json!([msg(42, "/stop@arbibot", now - 60)]),
+            owner,
+            now
+        ));
+        assert!(!pending_stop(
+            &json!([msg(42, "/stop", now - 600)]),
+            owner,
+            now
+        ));
+        assert!(!pending_stop(
+            &json!([msg(7, "/stop", now - 60)]),
+            owner,
+            now
+        ));
+        assert!(!pending_stop(
+            &json!([msg(42, "/stan", now - 60)]),
+            owner,
+            now
+        ));
+        assert!(!pending_stop(
+            &json!([msg(42, "/stop", now - 60)]),
+            None,
+            now
+        ));
     }
 
     #[test]

@@ -90,6 +90,16 @@ pub struct Args {
     #[arg(long, default_value_t = 1_000)]
     #[arg(help = "Minimalny odstęp przestawień zlecenia maker (ms)")]
     pub(super) requote_ms: u64,
+    #[arg(long)]
+    #[arg(
+        help = "Ponawiaj zabezpieczenia makera także w pauzie i po zatrzymaniu (najwyżej co 10 s)"
+    )]
+    pub(super) hedge_while_paused: bool,
+    #[arg(long)]
+    #[arg(
+        help = "Rebalans handlem: reszta z limitem z planu zamiast 1%, a próba bez wypełnienia nie zużywa dobowego limitu (ponowienie po 60 s)"
+    )]
+    pub(super) rebalance_strict: bool,
 }
 
 #[derive(clap::Args)]
@@ -102,4 +112,9 @@ pub struct LiveArgs {
     #[arg(long)]
     #[arg(help = "Bez pytania o potwierdzenie")]
     pub(super) yes: bool,
+    #[arg(long)]
+    #[arg(
+        help = "Na starcie zabezpiecz wypełnienia makera z poprzedniej sesji, które zostały bez zabezpieczenia (bez tej opcji bot tylko je zgłasza)"
+    )]
+    pub(super) hedge_leftovers: bool,
 }

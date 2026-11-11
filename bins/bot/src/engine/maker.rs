@@ -32,7 +32,7 @@ pub(super) struct Maker {
     last_quoted: [Option<Instant>; 2],
     pub(super) unhedged: [f64; 2],
     pub(super) unhedged_cash: [f64; 2],
-    filled_at: [Option<Instant>; 2],
+    pub(super) filled_at: [Option<Instant>; 2],
     pub(super) live: Option<LiveMaker>,
 }
 
@@ -281,7 +281,7 @@ impl Engine {
                 return self.flatten(side, qty, format!("{e:#}"), probe).await;
             }
             Err(e) if self.live.is_some() => {
-                self.halt(format!(
+                self.halt_once(format!(
                     "błąd zabezpieczenia makera na Bybit ({e:#}) — sprawdź salda na giełdach"
                 ))?;
                 self.last_tick_ms = now_ms();
@@ -328,7 +328,7 @@ impl Engine {
             }
             Ok(_) => Ok(()),
             Err(e) => {
-                self.halt(format!(
+                self.halt_once(format!(
                     "zabezpieczenie makera odrzucone na Bybit ({reason}), a domknięcie na OKX nieudane ({e:#}) — sprawdź salda na giełdach"
                 ))?;
                 self.last_tick_ms = now_ms();
@@ -359,7 +359,7 @@ impl Engine {
         let maker_cash = maker.unhedged_cash[i] * share;
         maker.unhedged[i] -= fill.qty;
         maker.unhedged_cash[i] -= maker_cash;
-        if below_hedge_minimum(
+        if below_minimum(
             maker.unhedged[i],
             fill.avg_price,
             step,
@@ -467,7 +467,7 @@ pub(super) fn reserve(
     w
 }
 
-fn below_hedge_minimum(
+pub(super) fn below_minimum(
     qty: f64,
     price: f64,
     step: f64,
@@ -488,9 +488,10 @@ mod tests {
 
     #[test]
     fn leftovers_too_small_to_hedge_end_the_fill_timer() {
-        assert!(below_hedge_minimum(0.1, 0.18, 0.1, (1.0, 1.0)));
-        assert!(below_hedge_minimum(5.0, 0.18, 0.1, (1.0, 1.0)));
-        assert!(!below_hedge_minimum(20.0, 0.18, 0.1, (1.0, 1.0)));
+        assert!(below_minimum(0.1, 0.18, 0.1, (1.0, 1.0)));
+        assert!(below_minimum(5.0, 0.18, 0.1, (1.0, 1.0)));
+        assert!(!below_minimum(20.0, 0.18, 0.1, (1.0, 1.0)));
+        assert!(below_minimum(0.06, 0.18, 0.1, (0.1, 1.0)));
     }
 
     #[test]
