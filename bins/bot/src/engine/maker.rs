@@ -165,7 +165,7 @@ impl Engine {
         let [okx, hedge] = match &self.maker {
             Some(m) => reserve(
                 self.inventory.wallets,
-                &[],
+                &self.replaced_orders(),
                 (m.unhedged, m.unhedged_cash),
                 [self.market.fees[OKX].maker, hedge_fee],
             ),
@@ -349,13 +349,22 @@ impl Engine {
         let close = opposite(side);
         let fee = self.market.fees[venue].taker;
         let cash = self.inventory.wallets[venue].book(close, fill.qty, fill.value(), fee);
-        let step = self.market.step;
+        let (step, min_qty, min_notional) = (
+            self.market.step,
+            self.market.min_qty,
+            self.market.min_notional,
+        );
         let maker = self.maker.as_mut().expect("checked above");
         let share = (fill.qty / maker.unhedged[i]).min(1.0);
         let maker_cash = maker.unhedged_cash[i] * share;
         maker.unhedged[i] -= fill.qty;
         maker.unhedged_cash[i] -= maker_cash;
-        if maker.unhedged[i] < step / 2.0 {
+        if below_hedge_minimum(
+            maker.unhedged[i],
+            fill.avg_price,
+            step,
+            (min_qty, min_notional),
+        ) {
             maker.filled_at[i] = None;
         }
         let pnl = maker_cash + cash;
@@ -458,6 +467,16 @@ pub(super) fn reserve(
     w
 }
 
+fn below_hedge_minimum(
+    qty: f64,
+    price: f64,
+    step: f64,
+    (min_qty, min_notional): (f64, f64),
+) -> bool {
+    let qty = floor_to(qty, step);
+    qty < min_qty || qty * price < min_notional
+}
+
 fn shortfall(qty: f64, filled: f64, step: f64) -> f64 {
     let missed = qty - filled;
     if missed < step / 2.0 { 0.0 } else { missed }
@@ -466,6 +485,13 @@ fn shortfall(qty: f64, filled: f64, step: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leftovers_too_small_to_hedge_end_the_fill_timer() {
+        assert!(below_hedge_minimum(0.1, 0.18, 0.1, (1.0, 1.0)));
+        assert!(below_hedge_minimum(5.0, 0.18, 0.1, (1.0, 1.0)));
+        assert!(!below_hedge_minimum(20.0, 0.18, 0.1, (1.0, 1.0)));
+    }
 
     #[test]
     fn rounding_dust_is_not_a_partial_hedge() {

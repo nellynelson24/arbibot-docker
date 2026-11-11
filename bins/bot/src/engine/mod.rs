@@ -285,7 +285,9 @@ impl Engine {
         buy_inventory: bool,
         confirmed: bool,
     ) -> Result<()> {
+        self.check_stop_file()?;
         if self.live.is_some() {
+            let buy_inventory = buy_inventory && self.halted.is_none();
             self.prepare_live(mid, buy_inventory, confirmed).await?;
             self.start_live_maker().await?;
             if args.auto_transfer {
@@ -308,8 +310,6 @@ impl Engine {
                 self.tell(line);
             }
             self.start_equity = self.inventory.equity(mid);
-
-            self.last_tick_ms = now_ms();
         }
         self.restore_day();
         let (mode, label) = match self.live {
@@ -320,6 +320,7 @@ impl Engine {
             "type": "start",
             "mode": mode,
             "equity": self.start_equity,
+            "mid": mid,
             "wallets": self.inventory.wallets.map(|w| [w.base, w.quote]),
             "pair": format!("{}/{}", self.market.base, self.market.quote),
             "capital": args.capital,
@@ -347,6 +348,8 @@ impl Engine {
         );
         self.tell(started);
         self.check_loss_limit()?;
+        self.check_stop_file()?;
+        self.last_tick_ms = now_ms();
 
         let mut tick = interval(Duration::from_secs(1));
         let mut status = interval(STATUS_EVERY);

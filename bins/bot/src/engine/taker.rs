@@ -162,24 +162,29 @@ impl Engine {
             self.stats.rebalance_trade_pnl += pnl;
         } else {
             self.stats.trades += 1;
-            self.day_trades += 1;
             match outcome {
                 "brak wypełnienia" => self.stats.unfilled += 1,
                 "sparowana" => self.stats.matched += 1,
                 _ => self.stats.with_remainder += 1,
             }
         }
+        let filled = buy.qty.max(sell.qty) > 0.0;
+        if filled && !rebalancing {
+            self.day_trades += 1;
+        }
         self.stats.pnl += pnl;
         self.day_pnl += pnl;
-        self.totals.add(
-            if rebalancing {
-                Kind::Rebalance
-            } else {
-                Kind::Taker
-            },
-            pnl,
-        );
-        let notional = plan.qty * plan.buy_limit;
+        if filled {
+            self.totals.add(
+                if rebalancing {
+                    Kind::Rebalance
+                } else {
+                    Kind::Taker
+                },
+                pnl,
+            );
+        }
+        let pnl_bps = bps(pnl, buy.qty.max(sell.qty) * plan.buy_limit);
         let mut notes = String::new();
         if let Some(v) = remainder_venue {
             notes += &format!(", reszta domknięta na {}", VENUES[v].name());
@@ -201,7 +206,7 @@ impl Engine {
             plan.expected_bps,
             pnl,
             self.market.quote,
-            pnl / notional * 1e4,
+            pnl_bps,
         );
         println!("[{}] {line}", clock());
         self.tell(line);
@@ -221,7 +226,7 @@ impl Engine {
             "orders": self.take_orders(),
             "open_qty": open,
             "pnl": pnl,
-            "pnl_bps": pnl / notional * 1e4,
+            "pnl_bps": pnl_bps,
             "outcome": outcome,
         }))?;
 
@@ -237,7 +242,7 @@ impl Engine {
     pub(super) fn rooms(&self) -> Option<[f64; 2]> {
         let mid = self.mid()?;
         let w = self.free();
-        Some([0, 1].map(|d| w[d].quote.min(w[1 - d].base * mid)))
+        Some([0, 1].map(|d| w[d].quote.min(w[1 - d].base * mid).max(0.0)))
     }
 
     pub(super) fn skew(&self) -> [f64; 2] {
@@ -349,11 +354,21 @@ pub(super) fn books_fresh(books: [&Book; 2], now: Instant) -> bool {
 }
 
 fn skew(room: [f64; 2], skew_bps: f64) -> [f64; 2] {
+    let room = room.map(|r| r.max(0.0));
     let total = room[0] + room[1];
     if total <= 0.0 {
         return [0.0; 2];
     }
-    [0, 1].map(|d| skew_bps * (room[d] - room[1 - d]) / total)
+    let cap = skew_bps.abs();
+    [0, 1].map(|d| (skew_bps * (room[d] - room[1 - d]) / total).clamp(-cap, cap))
+}
+
+fn bps(pnl: f64, notional: f64) -> f64 {
+    if notional > 0.0 {
+        pnl / notional * 1e4
+    } else {
+        0.0
+    }
 }
 
 fn restoring(room: [f64; 2]) -> [bool; 2] {
@@ -469,6 +484,15 @@ mod tests {
         assert_eq!(skew([0.0, 100.0], 15.0), [-15.0, 15.0]);
         assert_eq!(skew([0.0, 0.0], 15.0), [0.0, 0.0]);
         assert_eq!(skew([90.0, 10.0], 0.0), [0.0, 0.0]);
+        assert_eq!(skew([-18.0, 22.0], 15.0), [-15.0, 15.0]);
+        assert_eq!(skew([-30.0, 10.0], 15.0), [-15.0, 15.0]);
+        assert_eq!(skew([-5.0, -5.0], 15.0), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn bps_follow_the_filled_value() {
+        assert!((bps(0.012, 0.06 * 40.0) - 50.0).abs() < 1e-9);
+        assert_eq!(bps(0.0, 0.0), 0.0);
     }
 
     #[test]

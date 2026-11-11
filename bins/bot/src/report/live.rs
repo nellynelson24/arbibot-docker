@@ -29,7 +29,7 @@ pub(super) fn live_section(
     let _ = writeln!(full, "## Na żywo\n\nUstawienia: {}\n", run.settings());
     let _ = writeln!(
         full,
-        "- Arbitraż: **{pnl:+.4} USDC** z {} sygnałów, wykonane {} (średnio {:+.1} bp na wykonaną)",
+        "- Taker: **{pnl:+.4} USDC** z {} sygnałów, wykonane {} (średnio {:+.1} bp na wykonaną)",
         trades.len(),
         done.len(),
         mean_bps
@@ -68,11 +68,19 @@ pub(super) fn live_section(
     let _ = writeln!(
         short,
         "\nNa żywo: razem {:+.4} USDC\n• taker: {pnl:+.4} z {} wykonanych na {} sygnałów, śr. {mean_bps:+.0} bp\n• maker: {maker:+.4} z {} zabezpieczeń",
-        pnl + maker,
+        run.total(),
         done.len(),
         trades.len(),
         hedges.len()
     );
+    let rebalances = run.of("rebalance_trade").len() + run.of("rebalance").len();
+    if rebalances > 0 {
+        let _ = writeln!(
+            short,
+            "• rebalanse: {:+.4} z {rebalances}",
+            -run.rebalance_cost()
+        );
+    }
     if let Some(last) = statuses.last() {
         let _ = writeln!(short, "Kapitał: {:.2} USDC", num(last, "equity"));
     }
@@ -374,6 +382,25 @@ mod tests {
         assert!(full.contains("| chybiona | 3 | 900 / 900 | 150 / 150 | - |"));
         assert_eq!(advice.len(), 1);
         assert!(advice[0].contains("starszą książkę Bybit"));
+    }
+
+    #[test]
+    fn short_total_includes_rebalances() {
+        let run = Run {
+            label: "na żywo".to_owned(),
+            live: true,
+            start: None,
+            prior_start: None,
+            rows: vec![
+                json!({"type": "maker_hedge", "ts_ms": 1.0, "pnl": 0.10}),
+                json!({"type": "rebalance_trade", "ts_ms": 2.0, "pnl": -0.12, "outcome": "sparowana"}),
+            ],
+        };
+        let (mut full, mut short, mut advice) = (String::new(), String::new(), Vec::new());
+        live_section(&run, &mut full, &mut short, &mut advice);
+        assert!(short.contains("Na żywo: razem -0.0200 USDC"));
+        assert!(short.contains("• rebalanse: -0.1200 z 1"));
+        assert!(full.contains("- Taker: **+0.0000 USDC**"));
     }
 
     #[test]

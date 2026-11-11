@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -12,14 +12,43 @@ use tokio::time::{sleep, timeout};
 const API: &str = "https://api.telegram.org";
 const SERVICE: &str = "federbot-telegram";
 const POLL_SECS: u64 = 50;
+const SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const SEND_RETRIES: u32 = 3;
+const SEND_RETRY: Duration = Duration::from_secs(2);
+const POLL_RETRY: Duration = Duration::from_secs(10);
+const CONFLICT_RETRY: Duration = Duration::from_secs(60);
+const MAX_CHARS: usize = 4096;
+const CONFLICT_NOTE: &str = "Polecenia /stan i /stop chwilowo nie działają: Telegram podaje, że \
+     odbiera je inny proces z tym samym tokenem (kod 409). Ponawiam co minutę.";
 const HELP: &str = "Polecenia: /stan — stan bota, /stop — zatrzymanie handlu (plik STOP)";
 const VIEWER_HELP: &str = "Podgląd bota federbot. Polecenie: /stan — stan bota";
 
 #[derive(clap::Args)]
 pub struct Args {}
 
+#[derive(Debug)]
+struct ApiError {
+    method: String,
+    code: i64,
+    description: String,
+    retry_after: Option<u64>,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Telegram {}: kod {} {}",
+            self.method, self.code, self.description
+        )
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 pub struct Telegram {
     http: reqwest::Client,
+    poll: reqwest::Client,
     token: String,
     chat_id: String,
     viewers: Vec<String>,
@@ -57,7 +86,8 @@ impl Telegram {
         let chat_id = account::secret(SERVICE, "chat_id")
             .context("brak numeru czatu Telegram — instrukcja: bot telegram")?;
         Ok(Telegram {
-            http: client()?,
+            http: client(SEND_TIMEOUT)?,
+            poll: client(POLL_TIMEOUT)?,
             token,
             chat_id,
             viewers: viewers(),
@@ -87,9 +117,20 @@ impl Telegram {
     }
 
     async fn send_to(&self, chat: &str, text: &str) -> Result<()> {
-        self.call("sendMessage", json!({"chat_id": chat, "text": text}))
-            .await
-            .map(|_| ())
+        let body = json!({"chat_id": chat, "text": clip(text)});
+        let mut attempt = 0;
+        loop {
+            match self.call("sendMessage", body.clone()).await {
+                Ok(_) => return Ok(()),
+                Err(e) => match retry_in(&e, SEND_RETRY) {
+                    Some(wait) if attempt < SEND_RETRIES => {
+                        attempt += 1;
+                        sleep(wait).await;
+                    }
+                    _ => return Err(e),
+                },
+            }
+        }
     }
 
     async fn broadcast(&self, text: &str) {
@@ -101,8 +142,11 @@ impl Telegram {
     }
 
     async fn call(&self, method: &str, body: Value) -> Result<Value> {
-        let reply = self
-            .http
+        let client = match method {
+            "getUpdates" => &self.poll,
+            _ => &self.http,
+        };
+        let reply = client
             .post(format!("{API}/bot{}/{method}", self.token))
             .header("Content-Type", "application/json")
             .body(body.to_string())
@@ -115,25 +159,30 @@ impl Telegram {
         let v: Value = serde_json::from_str(&reply)
             .with_context(|| format!("Telegram {method}: odpowiedź nie jest JSON-em"))?;
         if v["ok"] != true {
-            bail!(
-                "Telegram {method}: kod {} {}",
-                v["error_code"],
-                v["description"].as_str().unwrap_or_default()
-            );
+            return Err(ApiError {
+                method: method.to_owned(),
+                code: v["error_code"].as_i64().unwrap_or(0),
+                description: v["description"].as_str().unwrap_or_default().to_owned(),
+                retry_after: v["parameters"]["retry_after"].as_u64(),
+            }
+            .into());
         }
         Ok(v["result"].clone())
     }
 }
 
 async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop_file: PathBuf) {
-    let mut offset = match telegram
-        .call("getUpdates", json!({"offset": -1, "timeout": 0}))
-        .await
-    {
-        Ok(updates) => updates[0]["update_id"].as_i64().map_or(0, |id| id + 1),
-        Err(e) => {
-            eprintln!("Telegram: polecenia wyłączone ({e:#})");
-            return;
+    let mut conflict_noted = false;
+    let mut offset = loop {
+        match telegram
+            .call("getUpdates", json!({"offset": -1, "timeout": 0}))
+            .await
+        {
+            Ok(updates) => break updates[0]["update_id"].as_i64().map_or(0, |id| id + 1),
+            Err(e) => {
+                note_poll_error(&telegram, &e, &mut conflict_noted).await;
+                sleep(retry_in(&e, POLL_RETRY).unwrap_or(POLL_RETRY)).await;
+            }
         }
     };
     let owner: Option<i64> = telegram.chat_id.trim().parse().ok();
@@ -152,16 +201,21 @@ async fn commands(telegram: Arc<Telegram>, status: watch::Receiver<String>, stop
             .await
         {
             Ok(updates) => updates,
-            Err(e) if format!("{e}").contains("409") => {
-                eprintln!("Telegram: polecenia odbiera inny proces bota");
-                return;
-            }
             Err(e) => {
-                eprintln!("Telegram (polecenia): {e:#}");
-                sleep(Duration::from_secs(10)).await;
+                note_poll_error(&telegram, &e, &mut conflict_noted).await;
+                sleep(retry_in(&e, POLL_RETRY).unwrap_or(POLL_RETRY)).await;
                 continue;
             }
         };
+        if conflict_noted {
+            conflict_noted = false;
+            if let Err(e) = telegram
+                .send("Polecenia /stan i /stop znowu działają.")
+                .await
+            {
+                eprintln!("Telegram: {e:#}");
+            }
+        }
         for update in updates.as_array().into_iter().flatten() {
             offset = offset.max(update["update_id"].as_i64().unwrap_or(0) + 1);
             let message = &update["message"];
@@ -226,10 +280,50 @@ fn viewers() -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(POLL_SECS + 20))
-        .build()?)
+const POLL_TIMEOUT: Duration = Duration::from_secs(POLL_SECS + 20);
+
+fn client(timeout: Duration) -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().timeout(timeout).build()?)
+}
+
+async fn note_poll_error(telegram: &Telegram, e: &anyhow::Error, conflict_noted: &mut bool) {
+    if !is_conflict(e) {
+        eprintln!("Telegram (polecenia): {e:#}");
+        return;
+    }
+    if *conflict_noted {
+        return;
+    }
+    *conflict_noted = true;
+    eprintln!("Telegram: polecenia odbiera inny proces bota");
+    if let Err(e) = telegram.send(CONFLICT_NOTE).await {
+        eprintln!("Telegram: {e:#}");
+    }
+}
+
+fn is_conflict(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<ApiError>().is_some_and(|a| a.code == 409)
+}
+
+fn retry_in(e: &anyhow::Error, fallback: Duration) -> Option<Duration> {
+    match e.downcast_ref::<ApiError>() {
+        Some(api) if api.code == 429 => {
+            Some(Duration::from_secs(api.retry_after.unwrap_or(5)).min(CONFLICT_RETRY))
+        }
+        Some(api) if api.code == 409 => Some(CONFLICT_RETRY),
+        Some(api) if api.code >= 500 => Some(fallback),
+        Some(_) => None,
+        None => Some(fallback),
+    }
+}
+
+fn clip(text: &str) -> String {
+    if text.chars().count() <= MAX_CHARS {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(MAX_CHARS - 1).collect();
+    cut.push('…');
+    cut
 }
 
 pub async fn setup(_: Args) -> Result<()> {
@@ -244,7 +338,8 @@ pub async fn setup(_: Args) -> Result<()> {
         return Ok(());
     };
     let mut telegram = Telegram {
-        http: client()?,
+        http: client(SEND_TIMEOUT)?,
+        poll: client(POLL_TIMEOUT)?,
         token,
         chat_id: String::new(),
         viewers: viewers(),
@@ -338,4 +433,47 @@ pub async fn setup(_: Args) -> Result<()> {
         chats[0].0
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn api(code: i64, retry_after: Option<u64>) -> anyhow::Error {
+        ApiError {
+            method: "sendMessage".to_owned(),
+            code,
+            description: String::new(),
+            retry_after,
+        }
+        .into()
+    }
+
+    #[test]
+    fn failed_calls_are_retried_only_when_it_can_help() {
+        let fallback = Duration::from_secs(2);
+        assert_eq!(
+            retry_in(&api(429, Some(7)), fallback),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(retry_in(&api(409, None), fallback), Some(CONFLICT_RETRY));
+        assert_eq!(retry_in(&api(502, None), fallback), Some(fallback));
+        assert_eq!(retry_in(&api(400, None), fallback), None);
+        assert_eq!(retry_in(&api(403, None), fallback), None);
+        assert_eq!(
+            retry_in(&anyhow!("Telegram sendMessage: timeout"), fallback),
+            Some(fallback)
+        );
+        assert!(is_conflict(&api(409, None)));
+        assert!(!is_conflict(&api(429, None)));
+    }
+
+    #[test]
+    fn long_messages_are_clipped_to_the_telegram_limit() {
+        assert_eq!(clip("krótko"), "krótko");
+        let long = "ą".repeat(MAX_CHARS + 10);
+        let clipped = clip(&long);
+        assert_eq!(clipped.chars().count(), MAX_CHARS);
+        assert!(clipped.ends_with('…'));
+    }
 }

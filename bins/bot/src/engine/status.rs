@@ -47,23 +47,27 @@ impl Engine {
     }
 
     pub(super) fn restore_day(&mut self) {
-        for entry in self.ledger.today() {
-            let pnl = entry["pnl"].as_f64().unwrap_or(0.0);
-            match entry["type"].as_str() {
-                Some("trade" | "maker_hedge") => {
-                    self.day_pnl += pnl;
-                    self.day_trades += 1;
-                }
-                Some("rebalance_trade") => self.day_pnl += pnl,
-                Some("rebalance") => self.day_pnl -= entry["cost"].as_f64().unwrap_or(0.0),
-                _ => {}
-            }
+        let day = Day::from_rows(&self.ledger.today());
+        self.day_pnl += day.pnl;
+        self.day_trades += day.trades;
+        self.day_failed_hedges += day.failed_hedges;
+        self.day_rebalances += day.rebalances;
+        if let Some(ts) = day.last_rebalance_ms {
+            let ago = Duration::from_secs_f64(((now_ms() - ts) / 1000.0).max(0.0));
+            self.last_trade_rebalance = Instant::now().checked_sub(ago);
         }
+    }
+
+    pub(super) fn check_stop_file(&mut self) -> Result<()> {
+        if self.halted.is_none() && self.stop_file.exists() {
+            self.halt(format!("plik {}", self.stop_file.display()))?;
+        }
+        Ok(())
     }
 
     pub(super) fn tick(&mut self) -> Result<()> {
         let now = now_ms();
-        if now - self.last_tick_ms > STALL_MS {
+        if stalled(now, self.last_tick_ms) {
             println!(
                 "[{}] przerwa w pracy (uśpienie?): pauza do odświeżenia książek",
                 clock()
@@ -77,9 +81,7 @@ impl Engine {
             self.paused_until = Some(Instant::now() + PAUSE_AFTER_STALL);
         }
         self.last_tick_ms = now;
-        if self.halted.is_none() && self.stop_file.exists() {
-            self.halt(format!("plik {}", self.stop_file.display()))?;
-        }
+        self.check_stop_file()?;
         let day = selector::utc_date(now);
         if day != self.day {
             let equity = self.mid().map(|mid| self.inventory.equity(mid));
@@ -225,6 +227,8 @@ impl Engine {
             "unfilled": s.unfilled,
             "pnl": s.pnl,
             "equity": equity,
+            "mid": mid,
+            "wallets": self.inventory.wallets.map(|w| [w.base, w.quote]),
             "rebalances": s.rebalances,
             "rebalance_cost": s.rebalance_cost,
             "switches": s.switches,
@@ -288,8 +292,14 @@ impl Engine {
             ));
         }
         lines.push(format!(
-            "• taker: transakcje {} (sparowane {}, z resztą {}, puste {}), sygnały {} (bez środków {})",
-            s.trades, s.matched, s.with_remainder, s.unfilled, s.signals, s.no_funds
+            "• taker: wykonane {} z {} prób (sparowane {}, z resztą {}, puste {}), sygnały {} (bez środków {})",
+            s.matched + s.with_remainder,
+            s.trades,
+            s.matched,
+            s.with_remainder,
+            s.unfilled,
+            s.signals,
+            s.no_funds
         ));
         if self.trade_rebalance {
             lines.push(format!(
@@ -377,7 +387,11 @@ impl Engine {
                 signed(s.maker_pnl, 4)
             ));
         }
-        lines.push(format!("• taker: transakcje {}", s.trades));
+        lines.push(format!(
+            "• taker: wykonane {} z {} prób",
+            s.matched + s.with_remainder,
+            s.trades
+        ));
         if s.rebalances > 0 {
             lines.push(format!(
                 "• rebalans przelewem: {} (koszt {:.4} {q})",
@@ -394,6 +408,47 @@ impl Engine {
         println!("\n{text}");
         self.tell(text);
         Ok(())
+    }
+}
+
+fn stalled(now: f64, last_tick_ms: f64) -> bool {
+    now - last_tick_ms > STALL_MS
+}
+
+#[derive(Default)]
+struct Day {
+    pnl: f64,
+    trades: u32,
+    failed_hedges: u32,
+    rebalances: u32,
+    last_rebalance_ms: Option<f64>,
+}
+
+impl Day {
+    fn from_rows(rows: &[serde_json::Value]) -> Self {
+        let mut day = Day::default();
+        for row in rows {
+            let pnl = row["pnl"].as_f64().unwrap_or(0.0);
+            match row["type"].as_str() {
+                Some("trade") => {
+                    day.pnl += pnl;
+                    day.trades += u32::from(row["outcome"] != "brak wypełnienia");
+                }
+                Some("maker_hedge") => {
+                    day.pnl += pnl;
+                    day.trades += 1;
+                    day.failed_hedges += u32::from(!row["flatten"].is_null());
+                }
+                Some("rebalance_trade") => {
+                    day.pnl += pnl;
+                    day.rebalances += 1;
+                    day.last_rebalance_ms = row["ts_ms"].as_f64().or(day.last_rebalance_ms);
+                }
+                Some("rebalance") => day.pnl -= row["cost"].as_f64().unwrap_or(0.0),
+                _ => {}
+            }
+        }
+        day
     }
 }
 
@@ -565,6 +620,30 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_slow_start_is_not_a_stall() {
+        let started = 1_794_000_000_000.0;
+        assert!(!stalled(started + 1_000.0, started));
+        assert!(stalled(started + 5_000.0, started));
+    }
+
+    #[test]
+    fn day_counters_survive_a_restart() {
+        let rows = [
+            json!({"type": "maker_hedge", "pnl": 0.05, "ts_ms": 1.0}),
+            json!({"type": "maker_hedge", "pnl": -0.02, "flatten": "170131", "ts_ms": 2.0}),
+            json!({"type": "maker_hedge", "pnl": -0.01, "flatten": "170131", "ts_ms": 3.0}),
+            json!({"type": "maker_hedge", "pnl": -0.01, "flatten": "170131", "ts_ms": 4.0}),
+            json!({"type": "trade", "pnl": 0.0, "outcome": "brak wypełnienia", "ts_ms": 5.0}),
+            json!({"type": "trade", "pnl": 0.03, "outcome": "sparowana", "ts_ms": 6.0}),
+            json!({"type": "rebalance_trade", "pnl": -0.08, "outcome": "sparowana", "ts_ms": 7.0}),
+        ];
+        let day = Day::from_rows(&rows);
+        assert_eq!((day.trades, day.failed_hedges, day.rebalances), (5, 3, 1));
+        assert_eq!(day.last_rebalance_ms, Some(7.0));
+        assert!((day.pnl + 0.04).abs() < 1e-9);
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub(super) struct Totals {
     events: Vec<(f64, f64)>,
     first_equity: Option<f64>,
     last_equity: Option<f64>,
+    last_held: Option<(f64, f64)>,
     deposits: f64,
     awaiting_equity: bool,
 }
@@ -45,6 +46,10 @@ impl Totals {
         match row["type"].as_str() {
             Some("start") => {
                 let pair = row["pair"].as_str().unwrap_or_default();
+                let price_move = match (self.last_held, row["mid"].as_f64()) {
+                    (Some((base, mid)), Some(now)) if pair == self.pair => base * (now - mid),
+                    _ => 0.0,
+                };
                 if pair != self.pair {
                     self.pair = pair.to_owned();
                     self.pair_pnl = 0.0;
@@ -53,22 +58,26 @@ impl Totals {
                 }
                 self.since_ms = self.since_ms.or(Some(ts));
                 match row["equity"].as_f64() {
-                    Some(equity) => self.started_with(equity),
+                    Some(equity) => self.started_with(equity, price_move),
                     None => self.awaiting_equity = true,
                 }
+                self.last_held = held(row);
             }
             Some("status") => {
                 if let Some(equity) = row["equity"].as_f64() {
                     if self.awaiting_equity {
-                        self.started_with(equity - pnl);
+                        self.started_with(equity - pnl, 0.0);
                     }
                     self.last_equity = Some(equity);
+                    self.last_held = held(row);
                 }
             }
             Some("outside_change") => self.outside_change(row["value"].as_f64().unwrap_or(0.0)),
             Some("outside_correction") => self.deposits += row["value"].as_f64().unwrap_or(0.0),
             Some("maker_hedge") => self.add_at(ts, Kind::Maker, pnl),
-            Some("trade") => self.add_at(ts, Kind::Taker, pnl),
+            Some("trade") if row["outcome"] != "brak wypełnienia" => {
+                self.add_at(ts, Kind::Taker, pnl)
+            }
             Some("rebalance_trade") => self.add_at(ts, Kind::Rebalance, pnl),
             Some("rebalance") => {
                 self.add_at(ts, Kind::Rebalance, -row["cost"].as_f64().unwrap_or(0.0))
@@ -77,11 +86,11 @@ impl Totals {
         }
     }
 
-    fn started_with(&mut self, equity: f64) {
+    fn started_with(&mut self, equity: f64, price_move: f64) {
         self.awaiting_equity = false;
         match (self.first_equity, self.last_equity) {
             (None, _) => self.first_equity = Some(equity),
-            (Some(_), Some(last)) => self.deposits += equity - last,
+            (Some(_), Some(last)) => self.deposits += equity - price_move - last,
             (Some(_), None) => {}
         }
         self.last_equity = Some(equity);
@@ -210,6 +219,15 @@ impl Totals {
     }
 }
 
+fn held(row: &Value) -> Option<(f64, f64)> {
+    let base: f64 = row["wallets"]
+        .as_array()?
+        .iter()
+        .map(|w| w[0].as_f64())
+        .sum::<Option<f64>>()?;
+    Some((base, row["mid"].as_f64()?))
+}
+
 fn cents(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
@@ -249,6 +267,36 @@ mod tests {
     }
 
     #[test]
+    fn price_moves_while_stopped_are_not_deposits() {
+        let t0 = 1_792_000_000_000.0_f64;
+        let wallets = json!([[500.0, 50.0], [500.0, 50.0]]);
+        let totals = Totals::from_ledger(vec![
+            json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC", "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "status", "ts_ms": t0 + 60_000.0, "pnl": 0.0, "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "start", "ts_ms": t0 + 600_000.0, "pair": "ARB/USDC", "equity": 206.0, "mid": 0.106, "wallets": wallets}),
+        ]);
+        assert!(totals.deposits.abs() < 1e-9);
+        let text = totals.summary_at("USDC", Some(206.0), None, t0 + 700_000.0);
+        assert!(text.contains("• zmiana cen monet: +6.00 USDC"));
+
+        let deposit = Totals::from_ledger(vec![
+            json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC", "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "status", "ts_ms": t0 + 60_000.0, "pnl": 0.0, "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "start", "ts_ms": t0 + 600_000.0, "pair": "ARB/USDC", "equity": 256.0, "mid": 0.106,
+                "wallets": [[500.0, 100.0], [500.0, 50.0]]}),
+        ]);
+        assert!((deposit.deposits - 50.0).abs() < 1e-9);
+
+        let twice = Totals::from_ledger(vec![
+            json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC", "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "status", "ts_ms": t0 + 60_000.0, "pnl": 0.0, "equity": 200.0, "mid": 0.1, "wallets": wallets}),
+            json!({"type": "start", "ts_ms": t0 + 600_000.0, "pair": "ARB/USDC", "equity": 206.0, "mid": 0.106, "wallets": wallets}),
+            json!({"type": "start", "ts_ms": t0 + 700_000.0, "pair": "ARB/USDC", "equity": 206.0, "mid": 0.106, "wallets": wallets}),
+        ]);
+        assert!(twice.deposits.abs() < 1e-9);
+    }
+
+    #[test]
     fn signed_amounts_never_show_negative_zero() {
         assert_eq!(signed(-0.00001, 2), "+0.00");
         assert_eq!(signed(-19.444, 2), "-19.44");
@@ -271,6 +319,7 @@ mod tests {
             json!({"type": "status", "ts_ms": t0 + 9.0 * day, "pnl": 99.0, "equity": 157.0}),
             json!({"type": "start", "ts_ms": t0 + 10.0 * day, "pair": "ARB/USDC", "equity": 157.0}),
             json!({"type": "trade", "ts_ms": t0 + 10.0 * day, "pnl": 0.3}),
+            json!({"type": "trade", "ts_ms": t0 + 10.0 * day, "pnl": 0.0, "outcome": "brak wypełnienia"}),
         ];
         let mut totals = Totals::from_ledger(rows);
         totals.add_at(t0 + 10.0 * day, Kind::Taker, 0.25);

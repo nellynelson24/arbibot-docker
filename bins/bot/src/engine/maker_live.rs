@@ -225,6 +225,25 @@ impl Engine {
         }
     }
 
+    pub(super) fn replaced_orders(&self) -> Vec<(Side, f64, f64)> {
+        let Some(maker) = &self.maker else {
+            return Vec::new();
+        };
+        let current: Vec<&str> = maker
+            .quotes
+            .iter()
+            .flatten()
+            .filter_map(|q| q.id.as_deref())
+            .collect();
+        maker
+            .live
+            .iter()
+            .flat_map(|l| l.orders.iter())
+            .filter(|(id, _)| !current.contains(&id.as_str()))
+            .map(|(_, own)| (own.side, (own.qty - own.booked).max(0.0), own.price))
+            .collect()
+    }
+
     pub(super) fn free(&self) -> [Wallet; 2] {
         let Some(maker) = &self.maker else {
             return self.inventory.wallets;
