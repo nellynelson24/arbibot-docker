@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use account::{Bybit, Network, Okx};
+use account::{Bybit, Fees, Network, Okx};
 use anyhow::{Context, Result};
 use venues::Venue;
 
@@ -56,21 +56,29 @@ pub(super) async fn load_market(
             (pick.base, pick.quote, pick.base_fee, pick.quote_fee)
         }
     };
-    load_pair(accounts, base, quote, base_fee, quote_fee).await
+    load_pair(accounts, (base, quote), base_fee, quote_fee, args.fee_scale).await
+}
+
+fn scaled(fees: Fees, scale: f64) -> Fees {
+    Fees {
+        maker: fees.maker * scale,
+        taker: fees.taker * scale,
+    }
 }
 
 pub(super) async fn load_pair(
     accounts: &Accounts,
-    base: String,
-    quote: String,
+    (base, quote): (String, String),
     base_fee: Routes,
     quote_fee: Routes,
+    fee_scale: f64,
 ) -> Result<Market> {
     let (okx, bybit) = (&accounts.okx, &accounts.bybit);
     let fees = [
         okx.fees(&base, &quote).await.context("prowizje OKX")?,
         bybit.fees(&base, &quote).await.context("prowizje Bybit")?,
-    ];
+    ]
+    .map(|f| scaled(f, fee_scale));
     let rules = [
         okx.rules(&base, &quote).await.context("reguły OKX")?,
         bybit.rules(&base, &quote).await.context("reguły Bybit")?,
@@ -238,4 +246,22 @@ fn cheapest(okx: &[Network], bybit: &[Network]) -> Option<Route> {
             })
         })
         .min_by(|x, y| (x.fees[0] + x.fees[1]).total_cmp(&(y.fees[0] + y.fees[1])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_scale_multiplies_maker_and_taker() {
+        let half = scaled(
+            Fees {
+                maker: 0.0008,
+                taker: 0.0025,
+            },
+            0.5,
+        );
+        assert!((half.maker - 0.0004).abs() < 1e-12);
+        assert!((half.taker - 0.00125).abs() < 1e-12);
+    }
 }

@@ -228,6 +228,9 @@ impl Run {
         if num(s, "skew_bps") > 0.0 {
             parts.push(format!("przechył {}", num(s, "skew_bps")));
         }
+        if let Some(scale) = s["fee_scale"].as_f64().filter(|k| *k != 1.0) {
+            parts.push(format!("prowizje ×{scale}"));
+        }
         if let Some(latency) = s["latency_ms"].as_array()
             && !self.live
         {

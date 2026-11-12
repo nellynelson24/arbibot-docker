@@ -55,6 +55,14 @@ services:
       --rebalance-max-cost-bps 30 --skew-bps 15 --rebalance-strict
       --data-dir data/ab-arb-strict
 
+  ab-arb-fees50:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --fee-scale 0.5
+      --data-dir data/ab-arb-fees50
+
   ab-ena:
     <<: *dry
     command: >-

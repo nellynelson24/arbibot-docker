@@ -114,10 +114,10 @@ impl Engine {
         let from = format!("{}/{}", self.market.base, self.market.quote);
         let market = load_pair(
             &self.accounts,
-            pick.base,
-            pick.quote,
+            (pick.base, pick.quote),
             pick.base_fee,
             pick.quote_fee,
+            self.fee_scale,
         )
         .await?;
         let (books, trades) = open_books(&market, self.maker.is_some());

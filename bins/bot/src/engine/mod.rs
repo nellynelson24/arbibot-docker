@@ -115,6 +115,7 @@ struct Engine {
     lazy_rebalance: bool,
     hedge_while_paused: bool,
     hedge_leftovers: bool,
+    fee_scale: f64,
     last_paused_hedge: Option<Instant>,
     rebalance_strict: bool,
     missed_since: [Option<Instant>; 2],
@@ -183,6 +184,9 @@ struct LiveStart {
 }
 
 async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
+    if !(0.0..=2.0).contains(&args.fee_scale) {
+        bail!("--fee-scale musi być od 0 do 2 (podano {})", args.fee_scale);
+    }
     let http = http()?;
     let accounts = Accounts {
         okx: Okx::new(http.clone(), Credentials::load(Venue::Okx, Scope::Read)?),
@@ -225,6 +229,7 @@ async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
         lazy_rebalance: args.lazy_rebalance,
         hedge_while_paused: args.hedge_while_paused,
         hedge_leftovers,
+        fee_scale: args.fee_scale,
         last_paused_hedge: None,
         rebalance_strict: args.rebalance_strict,
         missed_since: [None, None],
@@ -359,6 +364,8 @@ impl Engine {
             "maker_size": args.maker_size.unwrap_or(args.size),
             "latency_ms": [args.okx_latency_ms, args.bybit_latency_ms],
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
+            "fees_maker": [self.market.fees[0].maker, self.market.fees[1].maker],
+            "fee_scale": args.fee_scale,
         }))?;
         self.totals = totals::Totals::from_ledger(self.ledger.history());
         let started = self.start_text(args, label, mid);
@@ -456,6 +463,14 @@ impl Engine {
                 "• rebalans ścisły: reszta z limitem z planu, puste próby nie zużywają limitu"
                     .to_owned(),
             );
+        }
+        if args.fee_scale != 1.0 {
+            lines.push(format!(
+                "• prowizje ×{} (test): maker OKX {:.3}%, taker Bybit {:.3}%",
+                args.fee_scale,
+                self.market.fees[OKX].maker * 100.0,
+                self.market.fees[BYBIT].taker * 100.0
+            ));
         }
         if args.hedge_while_paused {
             lines.push("• zabezpieczenia makera także w pauzie i po zatrzymaniu".to_owned());

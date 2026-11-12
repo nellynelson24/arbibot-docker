@@ -26,6 +26,9 @@ pub async fn live(args: LiveArgs) -> Result<()> {
     if common.switch {
         bail!("--switch działa na razie tylko na sucho");
     }
+    if common.fee_scale != 1.0 {
+        bail!("--fee-scale działa tylko na sucho");
+    }
     for size in [Some(common.size), common.maker_size].into_iter().flatten() {
         if size > MAX_LIVE_SIZE {
             bail!("na żywo zlecenie może mieć najwyżej {MAX_LIVE_SIZE} (podano {size})");

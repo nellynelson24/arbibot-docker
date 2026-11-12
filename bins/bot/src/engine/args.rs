@@ -95,6 +95,11 @@ pub struct Args {
         help = "Ponawiaj zabezpieczenia makera także w pauzie i po zatrzymaniu (najwyżej co 10 s)"
     )]
     pub(super) hedge_while_paused: bool,
+    #[arg(long, default_value_t = 1.0)]
+    #[arg(
+        help = "Na sucho: mnożnik prowizji maker i taker obu giełd, np. 0.5 to połowa (test tańszych opłat)"
+    )]
+    pub(super) fee_scale: f64,
     #[arg(long)]
     #[arg(
         help = "Rebalans handlem: reszta z limitem z planu zamiast 1%, a próba bez wypełnienia nie zużywa dobowego limitu (ponowienie po 60 s)"
