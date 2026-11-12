@@ -40,46 +40,44 @@ services:
     <<: *dry
     command: >-
       bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
     healthcheck:
       test: find data/bot -name '*.jsonl' -mmin -3 | grep -q .
       interval: 1m
       start_period: 3m
 
-  ab-arb-tani:
-    <<: *dry
-    command: >-
-      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
-      --rebalance-max-cost-bps 30 --data-dir data/ab-arb-tani
-
-  ab-arb-bez:
-    <<: *dry
-    command: >-
-      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --rebalance-max-cost-bps 0
-      --data-dir data/ab-arb-bez
-
-  ab-arb-skew:
-    <<: *dry
-    command: >-
-      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
-      --skew-bps 15 --data-dir data/ab-arb-skew
-
-  ab-arb-maker20:
+  ab-arb-strict:
     <<: *dry
     command: >-
       bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
       --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
-      --data-dir data/ab-arb-maker20
+      --rebalance-max-cost-bps 30 --skew-bps 15 --rebalance-strict
+      --data-dir data/ab-arb-strict
 
   ab-ena:
     <<: *dry
     command: >-
       bot dry-run --pair ENA/USDC --capital 200 --size 40 --min-bps 40
-      --maker --maker-size 10 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
-      --rebalance-max-cost-bps 30 --data-dir data/ab-ena
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --data-dir data/ab-ena
+
+  ab-strk:
+    <<: *dry
+    command: >-
+      bot dry-run --pair STRK/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --data-dir data/ab-strk
+
+  ab-s:
+    <<: *dry
+    command: >-
+      bot dry-run --pair S/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --data-dir data/ab-s
 
   live:
     <<: *service

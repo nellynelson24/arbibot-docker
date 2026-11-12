@@ -32,7 +32,7 @@ Pierwszy start na nowej parze: `ARBIBOT_LIVE_FLAGS=--buy-inventory`. Bot kupuje 
 - Odczyt sald jest ponawiany 3 razy co 2 s przed zatrzymaniem bota. Klucze do odczytu z prawem wypłat blokują start tak samo jak klucze handlowe. `/stop` działa tylko od właściciela (sprawdzany nadawca) i jest wykonywany także wtedy, gdy przyszedł w ciągu 5 min przed startem.
 - `--auto-transfer` (domyślnie wyłączone): przelewy monety i USDC między giełdami z giełdy, której klucz ma prawo wypłat (Bybit EU go nie daje), tylko na adresy wpłat własnych kont; opis w [VPS.md](VPS.md).
 
-Warianty na sucho (`dry` i `ab-*`) różnią się od głównego (ARB/USDC, leniwy rebalans) jednym ustawieniem: `ab-arb-tani` rebalans tylko do 30 bp, `ab-arb-bez` bez płatnego rebalansu, `ab-arb-skew` przechył 15 bp, `ab-arb-maker20` zlecenie maker 20 USDC, `ab-ena` para ENA/USDC z ustawieniami bota na żywo. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
+Warianty na sucho (`dry` i `ab-*`) mają te same ustawienia co bot na żywo (maker 20 USDC, leniwy rebalans do 30 bp, przechył 15 bp) i różnią się jednym: `ab-arb-strict` z `--rebalance-strict`, `ab-ena`, `ab-strk` i `ab-s` to inne pary. Usługa `report` porównuje je codziennie o 8:00 czasu polskiego i wysyła skrót na Telegram.
 
 Raport poleca tylko pary, które przechodzą filtry płynności na obu giełdach: obrót 24 h co najmniej 250 tys. USD, spread najwyżej 30 bp i różnica cen między giełdami najwyżej 100 bp (notowania z chwili raportu). Te same filtry stosuje wybór pary bez `--pair`.
 
