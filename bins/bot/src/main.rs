@@ -53,3 +53,57 @@ async fn main() -> Result<()> {
         Command::Transfer(args) => engine::transfer(args).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compose_commands(compose: &str) -> Vec<(String, Vec<String>)> {
+        let mut out = Vec::new();
+        let mut service = String::new();
+        let mut lines = compose.lines().peekable();
+        while let Some(line) = lines.next() {
+            if let Some(name) = line.strip_prefix("  ").and_then(|l| l.strip_suffix(':'))
+                && !name.starts_with(' ')
+            {
+                service = name.to_owned();
+            }
+            if line.trim() != "command: >-" {
+                continue;
+            }
+            let mut words = Vec::new();
+            while let Some(next) = lines.peek().filter(|l| l.starts_with("      ")) {
+                words.extend(next.split_whitespace().map(str::to_owned));
+                lines.next();
+            }
+            out.push((service.clone(), words));
+        }
+        out
+    }
+
+    #[test]
+    fn every_dry_run_in_compose_parses_and_keeps_its_own_data_dir() {
+        let commands = compose_commands(include_str!("../../../compose.yaml"));
+        let dry: Vec<&(String, Vec<String>)> = commands
+            .iter()
+            .filter(|(_, words)| words.get(1).map(String::as_str) == Some("dry-run"))
+            .collect();
+        for name in ["ab-pepe", "ab-arb-maker40", "ab-arb-rest", "ab-usdc-pln"] {
+            assert!(dry.iter().any(|(s, _)| s == name), "brak {name}");
+        }
+        let mut dirs = Vec::new();
+        for (service, words) in &dry {
+            let parsed = Cli::try_parse_from(words);
+            assert!(parsed.is_ok(), "{service}: {:?}", parsed.err());
+            let dir = words
+                .iter()
+                .position(|w| w == "--data-dir")
+                .map_or("data".to_owned(), |i| words[i + 1].clone());
+            if service.starts_with("ab-") {
+                assert_eq!(dir, format!("data/{service}"));
+            }
+            assert!(!dirs.contains(&dir), "{service}: ten sam katalog {dir}");
+            dirs.push(dir);
+        }
+    }
+}

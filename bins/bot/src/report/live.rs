@@ -269,6 +269,17 @@ pub(super) fn live_section(
     let _ = writeln!(full);
 }
 
+pub(super) fn hedge_slip(v: &Value) -> Option<f64> {
+    let (top, avg) = (v["top"].as_f64()?, v["hedge_price"].as_f64()?);
+    if v["flatten"].is_string() || top <= 0.0 {
+        return None;
+    }
+    Some(match text(v, "side") {
+        "buy" => (top - avg) / top * 1e4,
+        _ => (avg - top) / top * 1e4,
+    })
+}
+
 fn hedge_section(run: &Run, full: &mut String, advice: &mut Vec<String>) {
     let probed = |kind: &str| -> Vec<&Value> {
         run.of(kind)
@@ -283,16 +294,7 @@ fn hedge_section(run: &Run, full: &mut String, advice: &mut Vec<String>) {
     let column = |rows: &[&Value], key: &str| -> Vec<f64> {
         rows.iter().filter_map(|v| v[key].as_f64()).collect()
     };
-    let slip = |v: &&Value| -> Option<f64> {
-        let (top, avg) = (v["top"].as_f64()?, v["hedge_price"].as_f64()?);
-        if v["flatten"].is_string() || top <= 0.0 {
-            return None;
-        }
-        Some(match text(v, "side") {
-            "buy" => (top - avg) / top * 1e4,
-            _ => (avg - top) / top * 1e4,
-        })
-    };
+    let slip = |v: &&Value| hedge_slip(v);
     let flattened = hedges.iter().filter(|v| v["flatten"].is_string()).count();
     let _ = writeln!(
         full,

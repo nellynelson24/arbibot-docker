@@ -169,4 +169,33 @@ mod tests {
         assert_eq!(text(ceil_to(0.10462 * 0.99, 0.00001), 0.00001), "0.10358");
         assert_eq!(text(ceil_to(0.1046, 0.0001), 0.0001), "0.1046");
     }
+
+    #[test]
+    fn tiny_prices_and_huge_quantities_keep_their_digits() {
+        let tick = 0.00000001;
+        assert_eq!(format!("{tick}"), "0.00000001");
+        assert_eq!(text(floor_to(0.0000103456, tick), tick), "0.00001034");
+        assert_eq!(text(ceil_to(0.0000103456, tick), tick), "0.00001035");
+        assert_eq!(text(floor_to(0.00001034, tick), tick), "0.00001034");
+        assert_eq!(text(ceil_to(0.00001034, tick), tick), "0.00001034");
+        assert_eq!(text(floor_to(0.00001034 * 1.005, tick), tick), "0.00001039");
+        let fine = 0.00000000001;
+        assert_eq!(text(floor_to(0.0000103456789, fine), fine), "0.00001034567");
+        assert_eq!(text(floor_to(20.0 / 0.00001034, 1.0), 1.0), "1934235");
+        assert_eq!(text(floor_to(20.0 / 0.00001034, 0.01), 0.01), "1934235.97");
+        assert_eq!(text(floor_to(1_934_235.0, 1.0), 1.0), "1934235");
+        assert!(floor_to(20.0 / 0.00001034, 1.0) * 0.00001034 <= 20.0);
+
+        let (okx, bybit) = (0.0000000001, 0.000000001);
+        assert_eq!(text(floor_to(0.0000037463, okx), okx), "0.0000037463");
+        assert_eq!(
+            text(ceil_to(0.0000037463 * 0.995, bybit), bybit),
+            "0.000003728"
+        );
+        assert_eq!(
+            text(floor_to(0.0000037463 * 1.005, bybit), bybit),
+            "0.000003765"
+        );
+        assert_eq!(text(floor_to(20.0 / 0.0000037463, 1.0), 1.0), "5338600");
+    }
 }

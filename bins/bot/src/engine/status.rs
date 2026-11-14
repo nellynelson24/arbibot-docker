@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::rebalance::trade_rebalance_need;
 use super::totals::signed;
-use super::{BYBIT, Engine, Holding, OKX, SIZE_MARGIN, VENUES, amount, clock};
+use super::{BYBIT, Engine, Holding, OKX, SIZE_MARGIN, VENUES, amount, clock, price};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
 use crate::report::pl_time;
@@ -182,6 +182,7 @@ impl Engine {
             }
             self.last_blocked = key;
         }
+        let maker_secs = self.maker.as_mut().map(|m| m.quote_time(Instant::now()));
         let s = &self.stats;
         let gaps = [0, 1].map(|v| self.books[v].borrow().gaps);
         let mut extra = String::new();
@@ -250,6 +251,7 @@ impl Engine {
             "outside_change": s.outside_change,
             "halted": self.halted,
             "book_gaps": gaps,
+            "maker_secs": maker_secs,
         }))
     }
 
@@ -353,7 +355,8 @@ impl Engine {
     pub(super) fn capital_lines(&self, equity: f64, mid: f64) -> Vec<String> {
         let (base, q) = (&self.market.base, &self.market.quote);
         let mut lines = vec![format!(
-            "Kapitał bota: {equity:.2} {q} ({base} i {q} na kontach handlowych, {base} po {mid:.6})"
+            "Kapitał bota: {equity:.2} {q} ({base} i {q} na kontach handlowych, {base} po {})",
+            price(mid)
         )];
         lines.extend(
             balances(&self.inventory.wallets, base, q)

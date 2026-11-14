@@ -20,8 +20,12 @@ pub(super) fn variants_section(
         let trades = run.trades();
         let done: Vec<&&Value> = trades.iter().filter(|t| executed(t)).collect();
         let hedges = run.of("maker_hedge");
-        let (taker, maker) = (run.sum("trade", "pnl"), run.sum("maker_hedge", "pnl"));
-        let (rebalance, total) = (run.rebalance_cost(), run.total());
+        let usdc = run.usdc();
+        let (taker, maker) = (
+            run.sum("trade", "pnl") * usdc,
+            run.sum("maker_hedge", "pnl") * usdc,
+        );
+        let (rebalance, total) = (run.rebalance_cost() * usdc, run.total() * usdc);
         let _ = writeln!(
             full,
             "| {} | {} | {} | {} | {} | {} | {:+.4} | {:+.1} | {} | {:+.4} | {:.4} | **{:+.4}** |",

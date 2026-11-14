@@ -63,6 +63,38 @@ services:
       --rebalance-max-cost-bps 30 --skew-bps 15 --fee-scale 0.5
       --data-dir data/ab-arb-fees50
 
+  ab-arb-maker40:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 40 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --data-dir data/ab-arb-maker40
+
+  ab-arb-rest:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --maker-rest
+      --data-dir data/ab-arb-rest
+
+  ab-pepe:
+    <<: *dry
+    command: >-
+      bot dry-run --pair PEPE/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --data-dir data/ab-pepe
+
+  ab-usdc-pln:
+    <<: *dry
+    command: >-
+      bot dry-run --pair USDC/PLN --capital 800 --size 160 --min-bps 40
+      --maker --maker-size 80 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --daily-loss-limit 8
+      --data-dir data/ab-usdc-pln
+
   ab-ena:
     <<: *dry
     command: >-

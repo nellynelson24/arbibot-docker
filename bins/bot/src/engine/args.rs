@@ -92,6 +92,11 @@ pub struct Args {
     pub(super) requote_ms: u64,
     #[arg(long)]
     #[arg(
+        help = "Maker po cenie progowej: zlecenie stale po cenie, przy której marża wobec książki Bybit równa się progowi (nie lepiej niż najlepsza cena OKX), przestawiane najwyżej co --requote-ms"
+    )]
+    pub(super) maker_rest: bool,
+    #[arg(long)]
+    #[arg(
         help = "Ponawiaj zabezpieczenia makera także w pauzie i po zatrzymaniu (najwyżej co 10 s)"
     )]
     pub(super) hedge_while_paused: bool,

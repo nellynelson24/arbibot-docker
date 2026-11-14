@@ -170,6 +170,16 @@ fn amount(x: f64, decimals: usize) -> String {
     }
 }
 
+fn price(x: f64) -> String {
+    let digits = if x.abs() > 0.0 {
+        5 - x.abs().log10().floor() as i32
+    } else {
+        0
+    };
+    let decimals = digits.max(6) as usize;
+    format!("{x:.decimals$}")
+}
+
 fn http() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -249,7 +259,7 @@ async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
         day_trades: 0,
         maker: args.maker.then(|| {
             let size = args.maker_size.unwrap_or(args.size);
-            Maker::new(size, args.maker_min_bps, args.requote_ms)
+            Maker::new(size, args.maker_min_bps, args.requote_ms, args.maker_rest)
         }),
         trades,
         maker_events: None,
@@ -362,6 +372,7 @@ impl Engine {
             "maker": args.maker,
             "maker_min_bps": args.maker_min_bps,
             "maker_size": args.maker_size.unwrap_or(args.size),
+            "maker_rest": args.maker_rest,
             "latency_ms": [args.okx_latency_ms, args.bybit_latency_ms],
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
             "fees_maker": [self.market.fees[0].maker, self.market.fees[1].maker],
@@ -452,6 +463,12 @@ impl Engine {
                 args.rebalance_max_cost_bps
             ),
         });
+        if args.maker && args.maker_rest {
+            lines.push(
+                "• maker po cenie progowej: zlecenie stoi tam, gdzie marża równa się progowi"
+                    .to_owned(),
+            );
+        }
         if args.skew_bps > 0.0 {
             lines.push(format!(
                 "• przechył progów według sald: {} bp",
@@ -613,5 +630,14 @@ mod tests {
         assert_eq!(amount(-0.00001, 4), "0.0000");
         assert_eq!(amount(-1.5, 2), "-1.50");
         assert_eq!(amount(151.70371, 4), "151.7037");
+    }
+
+    #[test]
+    fn prices_of_tiny_coins_keep_six_significant_digits() {
+        assert_eq!(price(0.18234567), "0.182346");
+        assert_eq!(price(1.5), "1.500000");
+        assert_eq!(price(0.0000103456789), "0.0000103457");
+        assert_eq!(price(0.00000001234), "0.0000000123400");
+        assert_eq!(price(0.0), "0.000000");
     }
 }

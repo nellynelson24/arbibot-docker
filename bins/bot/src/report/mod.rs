@@ -21,7 +21,7 @@ use crate::ledger::now_ms;
 use crate::telegram::Telegram;
 use compare::{agreement_section, variants_section};
 use live::live_section;
-use makers::scanner_maker_section;
+use makers::{Scan, rank_range, scanner_maker_section};
 use market::market_section;
 use stats::pl_hour;
 pub use stats::pl_time;
@@ -202,20 +202,48 @@ impl Run {
             .map(str::to_owned)
     }
 
+    fn usdc_rate(&self) -> Option<f64> {
+        let pair = self.pair()?;
+        let (base, quote) = pair.split_once('/')?;
+        if quote == "USDC" {
+            return Some(1.0);
+        }
+        if base != "USDC" {
+            return None;
+        }
+        let mid = self
+            .rows
+            .iter()
+            .rev()
+            .filter(|r| r["type"] == "status")
+            .find_map(|r| r["mid"].as_f64())
+            .or_else(|| self.setting("mid"))?;
+        (mid > 0.0).then(|| 1.0 / mid)
+    }
+
+    fn usdc(&self) -> f64 {
+        self.usdc_rate().unwrap_or(1.0)
+    }
+
     fn settings(&self) -> String {
         let Some(s) = &self.start else {
             return "-".to_owned();
         };
+        let pair = s["pair"].as_str().unwrap_or("?");
+        let quote = pair.split_once('/').map_or("?", |(_, q)| q);
         let mut parts = vec![
-            s["pair"].as_str().unwrap_or("?").to_owned(),
+            pair.to_owned(),
             format!("próg {}", num(s, "min_bps")),
-            format!("{} USD", num(s, "size")),
+            format!("{} {quote}", num(s, "size")),
         ];
         if num(s, "slack_bps") > 0.0 {
             parts.push(format!("zapas {}", num(s, "slack_bps")));
         }
         if s["maker"] == true {
             parts.push(format!("maker {}", num(s, "maker_min_bps")));
+            if s["maker_rest"] == true {
+                parts.push("maker po cenie progowej".to_owned());
+            }
         }
         if s["trade_rebalance"] == true {
             let cost = s["rebalance_max_cost_bps"].as_f64().unwrap_or(45.0);
@@ -239,6 +267,11 @@ impl Run {
                 latency.first().and_then(Value::as_f64).unwrap_or(0.0),
                 latency.get(1).and_then(Value::as_f64).unwrap_or(0.0)
             ));
+        }
+        match self.usdc_rate() {
+            Some(r) if r != 1.0 => parts.push(format!("kwoty w USDC po {:.4} {quote}", 1.0 / r)),
+            None => parts.push(format!("kwoty w {quote}")),
+            _ => {}
         }
         parts.join(", ")
     }
@@ -285,6 +318,7 @@ pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 3]>)
         .filter_map(|(label, dir, live)| load(label, &dir, live, since, until))
         .collect();
     let live = runs.iter().find(|r| r.live);
+    let scan = Scan::read(data_dir, rank_range((since, until)));
     let mut full = String::new();
     let mut short = String::new();
     let mut advice = Vec::new();
@@ -312,7 +346,7 @@ pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 3]>)
     if let Some(live) = live {
         agreement_section(live, &runs, &mut full);
     }
-    maker_section(&runs, &mut full, &mut advice);
+    maker_section(&runs, &scan.counts((since, until)), &mut full, &mut advice);
     calibration_section(&runs, &mut full, &mut advice);
     if let Some(run) = live.or(runs.first()) {
         let gaps = book_gaps(&run.of("status"));
@@ -335,7 +369,7 @@ pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 3]>)
         &mut advice,
     );
     scanner_maker_section(
-        (data_dir, books),
+        (&scan, books),
         live.or(runs.first()),
         (since, until),
         &mut full,
@@ -428,6 +462,42 @@ fn load(label: String, dir: &Path, live: bool, since: f64, until: f64) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variants_in_another_quote_are_shown_in_usdc() {
+        let run = Run {
+            label: "ab-usdc-pln".to_owned(),
+            live: false,
+            start: Some(
+                serde_json::json!({"type": "start", "pair": "USDC/PLN", "size": 160.0, "min_bps": 40.0, "mid": 4.1}),
+            ),
+            prior_start: None,
+            rows: vec![
+                serde_json::json!({"type": "maker_hedge", "pnl": 4.0, "pnl_bps": 25.0}),
+                serde_json::json!({"type": "status", "mid": 4.0}),
+            ],
+        };
+        assert_eq!(run.usdc_rate(), Some(0.25));
+        assert!(run.settings().starts_with("USDC/PLN, próg 40, 160 PLN"));
+        assert!(run.settings().ends_with("kwoty w USDC po 4.0000 PLN"));
+        let (mut full, mut short, mut advice) = (String::new(), String::new(), Vec::new());
+        variants_section(&[run], &mut full, &mut short, &mut advice);
+        assert!(
+            full.contains("| +1.0000 | 0.0000 | **+1.0000** |"),
+            "{full}"
+        );
+        assert!(short.contains("ab-usdc-pln: +1.000"), "{short}");
+
+        let eur = Run {
+            label: "x".to_owned(),
+            live: false,
+            start: Some(serde_json::json!({"type": "start", "pair": "BTC/EUR", "size": 40.0})),
+            prior_start: None,
+            rows: Vec::new(),
+        };
+        assert_eq!(eur.usdc_rate(), None);
+        assert!(eur.settings().ends_with("kwoty w EUR"));
+    }
 
     #[test]
     fn book_gaps_count_increments_across_restarts() {

@@ -10,7 +10,7 @@ use super::orders::floor_to;
 use super::totals::signed;
 use super::{
     Accounts, Engine, Holding, INVENTORY_SLIPPAGE, LiveArgs, LiveStart, SIZE_MARGIN, VENUES,
-    amount, clock, http, run,
+    amount, clock, http, price, run,
 };
 use crate::inventory::Wallet;
 use crate::paper::Side;
@@ -236,8 +236,9 @@ impl Engine {
             println!("\nBrakuje {base} do sprzedaży:");
             for &(v, qty, limit) in &purchases {
                 println!(
-                    "  {}: kupno {qty} {base} po najwyżej {limit:.6} (≈{:.2} {quote}){}",
+                    "  {}: kupno {qty} {base} po najwyżej {} (≈{:.2} {quote}){}",
                     VENUES[v].name(),
+                    price(limit),
                     qty * limit,
                     if buy_inventory {
                         ""
@@ -277,10 +278,10 @@ impl Engine {
             for (v, qty, limit) in purchases {
                 let fill = self.ioc(v, Side::Buy, qty, limit).await?;
                 let line = format!(
-                    "{}: kupiono {} {base} po średnio {:.6} (≈{:.2} {quote})",
+                    "{}: kupiono {} {base} po średnio {} (≈{:.2} {quote})",
                     VENUES[v].name(),
                     fill.qty,
-                    fill.avg_price,
+                    price(fill.avg_price),
                     fill.qty * fill.avg_price
                 );
                 println!("  {line}");

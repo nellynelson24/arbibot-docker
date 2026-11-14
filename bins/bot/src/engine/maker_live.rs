@@ -9,9 +9,9 @@ use venues::Venue;
 
 use serde_json::{Value, json};
 
-use super::maker::{Resting, below_minimum, index, reserve};
+use super::maker::{Resting, Spent, below_minimum, index, reserve};
 use super::orders::{side_id, text};
-use super::{BYBIT, Engine, OKX, clock};
+use super::{BYBIT, Engine, OKX, clock, price};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
 use crate::paper::Side;
@@ -242,13 +242,13 @@ impl Engine {
                 "adopted": adopt,
             }))?;
             let line = format!(
-                "Po poprzedniej sesji zostało bez zabezpieczenia: {} {qty:.4} {base} na {} po średnio {:.6} {quote}. {}",
+                "Po poprzedniej sesji zostało bez zabezpieczenia: {} {qty:.4} {base} na {} po średnio {} {quote}. {}",
                 match side {
                     Side::Buy => "kupno",
                     Side::Sell => "sprzedaż",
                 },
                 super::VENUES[OKX].name(),
-                cash.abs() / qty,
+                price(cash.abs() / qty),
                 if adopt {
                     "Bot zabezpieczy to na Bybit EU."
                 } else {
@@ -293,6 +293,10 @@ impl Engine {
         let Some(maker) = &mut self.maker else {
             return;
         };
+        let now = Instant::now();
+        for i in 0..2 {
+            maker.spend(i, Spent::Other, now);
+        }
         for quote in &mut maker.quotes {
             if let (Some(live), Some(id)) =
                 (&maker.live, quote.as_ref().and_then(|q| q.id.as_ref()))

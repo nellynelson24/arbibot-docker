@@ -4,10 +4,10 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::maker_live::LiveMaker;
-use super::orders::{floor_to, side_id};
+use super::orders::{ceil_to, floor_to, side_id};
 use super::taker::books_fresh;
 use super::totals::Kind;
-use super::{BYBIT, Engine, OKX, REMAINDER_SLIPPAGE, VENUES, clock};
+use super::{BYBIT, Engine, OKX, REMAINDER_SLIPPAGE, VENUES, clock, price};
 use crate::book::{Book, Trade};
 use crate::inventory::Wallet;
 use crate::ledger::now_ms;
@@ -15,6 +15,36 @@ use crate::paper::{Fill, Side};
 
 const HEDGE_SLIPPAGE: f64 = 0.005;
 const MAX_FAILED_HEDGES: u32 = 3;
+const REST_SLACK_BPS: f64 = 1e-6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Spent {
+    Resting,
+    Margin,
+    Skew,
+    Funds,
+    Other,
+}
+
+impl Spent {
+    const ALL: [Spent; 5] = [
+        Spent::Resting,
+        Spent::Margin,
+        Spent::Skew,
+        Spent::Funds,
+        Spent::Other,
+    ];
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Spent::Resting => "resting",
+            Spent::Margin => "margin",
+            Spent::Skew => "skew",
+            Spent::Funds => "funds",
+            Spent::Other => "other",
+        }
+    }
+}
 
 pub(super) struct Resting {
     pub(super) price: f64,
@@ -28,6 +58,9 @@ pub(super) struct Maker {
     size: f64,
     min_bps: f64,
     requote: Duration,
+    rest: bool,
+    secs: [[f64; 5]; 2],
+    spent_since: [Option<(Spent, Instant)>; 2],
     pub(super) quotes: [Option<Resting>; 2],
     last_quoted: [Option<Instant>; 2],
     pub(super) unhedged: [f64; 2],
@@ -37,11 +70,12 @@ pub(super) struct Maker {
 }
 
 impl Maker {
-    pub(super) fn new(size: f64, min_bps: f64, requote_ms: u64) -> Self {
+    pub(super) fn new(size: f64, min_bps: f64, requote_ms: u64, rest: bool) -> Self {
         Maker {
             size,
             min_bps,
             requote: Duration::from_millis(requote_ms),
+            rest,
             ..Maker::default()
         }
     }
@@ -51,8 +85,37 @@ impl Maker {
             size: self.size,
             min_bps: self.min_bps,
             requote: self.requote,
+            rest: self.rest,
             ..Maker::default()
         };
+    }
+
+    pub(super) fn spend(&mut self, i: usize, state: Spent, now: Instant) {
+        if let Some((last, since)) = self.spent_since[i] {
+            self.secs[i][last as usize] += now.saturating_duration_since(since).as_secs_f64();
+        }
+        self.spent_since[i] = Some((state, now));
+    }
+
+    pub(super) fn quote_time(&mut self, now: Instant) -> Value {
+        for i in 0..2 {
+            if let Some((state, _)) = self.spent_since[i] {
+                self.spend(i, state, now);
+            }
+        }
+        let side = |i: usize| -> Value {
+            Spent::ALL
+                .iter()
+                .map(|s| {
+                    (
+                        s.id().to_owned(),
+                        json!((self.secs[i][*s as usize] * 10.0).round() / 10.0),
+                    )
+                })
+                .collect::<serde_json::Map<String, Value>>()
+                .into()
+        };
+        json!({"buy": side(0), "sell": side(1)})
     }
 }
 
@@ -75,80 +138,147 @@ impl Engine {
         let Some(maker) = &self.maker else {
             return;
         };
-        let (size, min_bps, requote) = (maker.size, maker.min_bps, maker.requote);
+        let (size, min_bps, requote, rest) = (maker.size, maker.min_bps, maker.requote, maker.rest);
         let skew = self.skew();
         let connected = maker.live.as_ref().is_none_or(|l| l.connected);
         let old = [0, 1].map(|i| maker.quotes[i].as_ref().and_then(|q| q.id.clone()));
         let mut next: [Option<Option<Resting>>; 2] = [None, None];
         let mut placed = [false; 2];
+        let mut spent = [Spent::Other; 2];
+        let (step, tick) = (self.market.step, self.market.tick[OKX]);
         {
             let okx = self.books[OKX].borrow();
             let bybit = self.books[BYBIT].borrow();
             let fresh = connected && books_fresh([&okx, &bybit], Instant::now());
             for side in [Side::Buy, Side::Sell] {
                 let i = index(side);
-                let best = match side {
-                    Side::Buy => okx.bids.first(),
-                    Side::Sell => okx.asks.first(),
+                let levels = match side {
+                    Side::Buy => &okx.bids,
+                    Side::Sell => &okx.asks,
                 };
-                let Some(&(best, best_qty)) = best.filter(|_| fresh) else {
+                let Some(&(best, best_qty)) = levels.first().filter(|_| fresh) else {
                     next[i] = Some(None);
                     continue;
                 };
                 let maker = self.maker.as_ref().expect("checked above");
                 let can_place = maker.last_quoted[i].is_none_or(|t| t.elapsed() >= requote);
+                let threshold = min_bps - skew[i];
+                let target = match rest {
+                    true => self.rest_target(side, best, size, threshold, &bybit),
+                    false => Some((best, floor_to(size / best, step))),
+                };
                 let mut current = maker.quotes[i]
                     .as_ref()
                     .map(|q| (q.price, q.qty, q.queue_ahead, q.id.clone()));
 
                 if let Some((price, ..)) = current {
-                    let behind = match side {
-                        Side::Buy => best > price,
-                        Side::Sell => best < price,
+                    let moved = match (rest, target) {
+                        (true, Some((target, _))) => (target - price).abs() > tick / 2.0,
+                        (true, None) => false,
+                        (false, _) => match side {
+                            Side::Buy => best > price,
+                            Side::Sell => best < price,
+                        },
                     };
-                    if behind && can_place {
+                    if moved && can_place {
                         current = None;
                     }
                 }
-                let price = current.as_ref().map_or(best, |q| q.0);
-                let qty = floor_to(size / price, self.market.step);
-                let worth = self
-                    .maker_edge(side, price, qty, &bybit)
-                    .is_some_and(|edge| edge >= min_bps - skew[i])
-                    && self.maker_funded(side, price, qty, &bybit)
-                    && qty >= self.market.min_qty
-                    && qty * price >= self.market.min_notional;
-                next[i] = Some(match (worth, current) {
-                    (false, _) => None,
-                    (true, Some((price, qty, queue_ahead, id))) => Some(Resting {
+                let (price, qty) = match (&current, target) {
+                    (Some(q), _) => (q.0, floor_to(size / q.0, step)),
+                    (None, Some(target)) => target,
+                    (None, None) => {
+                        next[i] = Some(None);
+                        continue;
+                    }
+                };
+                let sized = qty >= self.market.min_qty && qty * price >= self.market.min_notional;
+                let slack = if rest { REST_SLACK_BPS } else { 0.0 };
+                let reason = idle_reason(
+                    self.maker_funded(side, price, qty, &bybit),
+                    sized,
+                    self.maker_edge(side, price, qty, &bybit),
+                    min_bps,
+                    threshold - slack,
+                );
+                next[i] = Some(match (reason, current) {
+                    (Some(_), _) => None,
+                    (None, Some((price, qty, queue_ahead, id))) => Some(Resting {
                         price,
                         qty,
                         queue_ahead,
                         id,
                     }),
-                    (true, None) if can_place => {
+                    (None, None) if can_place => {
                         placed[i] = true;
                         Some(Resting {
-                            price: best,
+                            price,
                             qty,
-                            queue_ahead: best_qty,
+                            queue_ahead: if rest {
+                                level_qty(levels, price)
+                            } else {
+                                best_qty
+                            },
                             id: None,
                         })
                     }
-                    (true, None) => None,
+                    (None, None) => None,
                 });
+                spent[i] = match (reason, &next[i]) {
+                    (Some(reason), _) => reason,
+                    (None, Some(Some(_))) => Spent::Resting,
+                    _ => Spent::Other,
+                };
             }
         }
         let maker = self.maker.as_mut().expect("checked above");
+        let now = Instant::now();
         for i in 0..2 {
             if let Some(quote) = next[i].take() {
                 maker.quotes[i] = quote;
             }
             if placed[i] {
-                maker.last_quoted[i] = Some(Instant::now());
+                maker.last_quoted[i] = Some(now);
             }
+            maker.spend(i, spent[i], now);
         }
         self.send_quotes(old, placed);
+    }
+
+    fn rest_target(
+        &self,
+        side: Side,
+        best: f64,
+        size: f64,
+        threshold: f64,
+        bybit: &Book,
+    ) -> Option<(f64, f64)> {
+        let fees = (self.market.fees[OKX].maker, self.market.fees[BYBIT].taker);
+        let (step, tick) = (self.market.step, self.market.tick[OKX]);
+        let hedge_at = |qty: f64| match side {
+            Side::Buy => bybit.sell_fill(qty).map(|f| f.0),
+            Side::Sell => bybit.buy_fill(qty).map(|f| f.0),
+        };
+        let first = rest_price(
+            side,
+            hedge_at(floor_to(size / best, step))?,
+            fees,
+            threshold,
+            best,
+            tick,
+        );
+        let qty = floor_to(size / first, step);
+        Some((
+            rest_price(side, hedge_at(qty)?, fees, threshold, best, tick),
+            qty,
+        ))
+    }
+
+    fn fill_edge(&self, side: Side, price: f64, qty: f64) -> (Option<f64>, f64) {
+        let min_bps = self.maker.as_ref().map_or(0.0, |m| m.min_bps);
+        let threshold = min_bps - self.skew()[index(side)];
+        let bybit = self.books[BYBIT].borrow();
+        (self.maker_edge(side, price, qty, &bybit), threshold)
     }
 
     fn maker_edge(&self, side: Side, price: f64, qty: f64, bybit: &Book) -> Option<f64> {
@@ -227,6 +357,7 @@ impl Engine {
         value: f64,
         (key, detail): (&str, Value),
     ) -> Result<()> {
+        let (expected, threshold) = self.fill_edge(side, value / qty, qty);
         let fee = self.market.fees[OKX].maker;
         let cash = self.inventory.wallets[OKX].book(side, qty, value, fee);
         if let Some(maker) = &mut self.maker {
@@ -241,6 +372,8 @@ impl Engine {
             "side": side_id(side),
             "price": value / qty,
             "qty": qty,
+            "expected_bps": expected,
+            "threshold_bps": threshold,
         });
         line[key] = detail;
         self.ledger.write(line)
@@ -380,7 +513,7 @@ impl Engine {
         self.totals.add(Kind::Maker, pnl);
         let notional = maker_cash.abs();
         let line = format!(
-            "maker: {} {:.4} {} na OKX EEA, {} na {} po {:.6}: wynik {:+.4} {} ({:+.1} bp)",
+            "maker: {} {:.4} {} na OKX EEA, {} na {} po {}: wynik {:+.4} {} ({:+.1} bp)",
             match side {
                 Side::Buy => "kupno",
                 Side::Sell => "sprzedaż",
@@ -393,7 +526,7 @@ impl Engine {
                 "zabezpieczenie"
             },
             VENUES[venue].name(),
-            fill.avg_price,
+            price(fill.avg_price),
             pnl,
             self.market.quote,
             pnl / notional * 1e4
@@ -417,6 +550,55 @@ impl Engine {
         self.last_tick_ms = now_ms();
         self.check_loss_limit()
     }
+}
+
+fn idle_reason(
+    funded: bool,
+    sized: bool,
+    edge: Option<f64>,
+    min_bps: f64,
+    threshold: f64,
+) -> Option<Spent> {
+    if !funded {
+        return Some(Spent::Funds);
+    }
+    if !sized {
+        return Some(Spent::Other);
+    }
+    match edge {
+        None => Some(Spent::Other),
+        Some(e) if e >= threshold => None,
+        Some(e) if e >= min_bps => Some(Spent::Skew),
+        Some(_) => Some(Spent::Margin),
+    }
+}
+
+pub(super) fn rest_price(
+    side: Side,
+    hedge: f64,
+    (maker_fee, taker_fee): (f64, f64),
+    threshold_bps: f64,
+    best: f64,
+    tick: f64,
+) -> f64 {
+    let margin = 1.0 + threshold_bps / 1e4;
+    match side {
+        Side::Buy => floor_to(
+            hedge * (1.0 - taker_fee) / ((1.0 + maker_fee) * margin),
+            tick,
+        )
+        .min(best),
+        Side::Sell => {
+            ceil_to(hedge * (1.0 + taker_fee) * margin / (1.0 - maker_fee), tick).max(best)
+        }
+    }
+}
+
+fn level_qty(levels: &[(f64, f64)], price: f64) -> f64 {
+    levels
+        .iter()
+        .find(|l| (l.0 - price).abs() <= price * 1e-9)
+        .map_or(0.0, |l| l.1)
 }
 
 fn match_trade(quote: &mut Resting, side: Side, price: f64, qty: f64) -> f64 {
@@ -534,6 +716,85 @@ mod tests {
         let [_, after_sell] = reserve(wallets, &[], ([0.0, 20.0], [0.0, 3.2]), fees);
         assert!(close(after_sell.quote, 80.0 - 3.2 * 1.005 * 1.0025));
         assert!(close(after_sell.base, 281.6));
+    }
+
+    #[test]
+    fn a_side_without_an_order_says_why() {
+        assert_eq!(idle_reason(true, true, Some(21.0), 20.0, 20.0), None);
+        assert_eq!(idle_reason(true, true, Some(12.0), 20.0, 5.0), None);
+        assert_eq!(
+            idle_reason(true, true, Some(25.0), 20.0, 35.0),
+            Some(Spent::Skew)
+        );
+        assert_eq!(
+            idle_reason(true, true, Some(12.0), 20.0, 35.0),
+            Some(Spent::Margin)
+        );
+        assert_eq!(
+            idle_reason(false, true, Some(50.0), 20.0, 20.0),
+            Some(Spent::Funds)
+        );
+        assert_eq!(
+            idle_reason(true, false, Some(50.0), 20.0, 20.0),
+            Some(Spent::Other)
+        );
+        assert_eq!(
+            idle_reason(true, true, None, 20.0, 20.0),
+            Some(Spent::Other)
+        );
+    }
+
+    #[test]
+    fn quote_time_adds_up_per_side_and_reason() {
+        let mut maker = Maker::new(20.0, 20.0, 1_000, false);
+        let t0 = Instant::now();
+        maker.spend(0, Spent::Resting, t0);
+        maker.spend(1, Spent::Funds, t0);
+        maker.spend(0, Spent::Margin, t0 + Duration::from_secs(30));
+        maker.spend(0, Spent::Resting, t0 + Duration::from_secs(40));
+        let time = maker.quote_time(t0 + Duration::from_secs(100));
+        assert_eq!(time["buy"]["resting"], 90.0);
+        assert_eq!(time["buy"]["margin"], 10.0);
+        assert_eq!(time["sell"]["funds"], 100.0);
+        assert_eq!(time["sell"]["skew"], 0.0);
+        let again = maker.quote_time(t0 + Duration::from_secs(160));
+        assert_eq!(again["buy"]["resting"], 150.0);
+    }
+
+    #[test]
+    fn resting_price_gives_exactly_the_threshold_and_never_beats_the_best() {
+        let fees = (0.0008, 0.0018);
+        let edge = |side: Side, price: f64, hedge: f64| match side {
+            Side::Buy => (hedge * (1.0 - fees.1) / (price * (1.0 + fees.0)) - 1.0) * 1e4,
+            Side::Sell => (price * (1.0 - fees.0) / (hedge * (1.0 + fees.1)) - 1.0) * 1e4,
+        };
+        let tick = 0.0001;
+        let buy = rest_price(Side::Buy, 0.2000, fees, 20.0, 0.2100, tick);
+        assert!(edge(Side::Buy, buy, 0.2000) >= 20.0);
+        assert!(edge(Side::Buy, buy + tick, 0.2000) < 20.0);
+        assert!(buy < 0.2000);
+        let sell = rest_price(Side::Sell, 0.2000, fees, 20.0, 0.1900, tick);
+        assert!(edge(Side::Sell, sell, 0.2000) >= 20.0);
+        assert!(edge(Side::Sell, sell - tick, 0.2000) < 20.0);
+        assert!(sell > 0.2000);
+
+        assert_eq!(
+            rest_price(Side::Buy, 0.2000, fees, 20.0, 0.1950, tick),
+            0.1950
+        );
+        assert_eq!(
+            rest_price(Side::Sell, 0.2000, fees, 20.0, 0.2050, tick),
+            0.2050
+        );
+        let skewed = rest_price(Side::Buy, 0.2000, fees, 5.0, 0.2100, tick);
+        assert!(skewed > buy);
+    }
+
+    #[test]
+    fn queue_ahead_is_the_size_already_at_our_price() {
+        let bids = [(0.2010, 500.0), (0.2005, 300.0), (0.2000, 900.0)];
+        assert_eq!(level_qty(&bids, 0.2005), 300.0);
+        assert_eq!(level_qty(&bids, 0.1990), 0.0);
     }
 
     fn resting(qty: f64, queue_ahead: f64) -> Resting {
