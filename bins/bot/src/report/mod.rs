@@ -19,7 +19,7 @@ use venues::{Book, Venue};
 
 use crate::ledger::now_ms;
 use crate::telegram::Telegram;
-use compare::{agreement_section, variants_section};
+use compare::{agreement_section, switch_section, variants_section};
 use live::live_section;
 use makers::{Scan, rank_range, scanner_maker_section};
 use market::market_section;
@@ -188,7 +188,9 @@ impl Run {
     }
 
     fn total(&self) -> f64 {
-        self.sum("trade", "pnl") + self.sum("maker_hedge", "pnl") - self.rebalance_cost()
+        self.sum("trade", "pnl") + self.sum("maker_hedge", "pnl")
+            - self.rebalance_cost()
+            - self.sum("switch", "cost")
     }
 
     fn setting(&self, key: &str) -> Option<f64> {
@@ -244,6 +246,19 @@ impl Run {
             if s["maker_rest"] == true {
                 parts.push("maker po cenie progowej".to_owned());
             }
+            if s["maker_latency"] == true {
+                parts.push("maker z opóźnieniem".to_owned());
+            }
+            if let Some(secs) = s["maker_net_secs"].as_f64() {
+                parts.push(format!("netowanie {secs} s"));
+            }
+        }
+        if s["switch"] == true {
+            let every = s["review_hours"].as_f64().unwrap_or(24.0);
+            parts.push(match s["switch_maker_hours"].as_f64() {
+                Some(window) => format!("zmiana pary co {every} h (maker z {window} h)"),
+                None => format!("zmiana pary co {every} h"),
+            });
         }
         if s["trade_rebalance"] == true {
             let cost = s["rebalance_max_cost_bps"].as_f64().unwrap_or(45.0);
@@ -343,6 +358,7 @@ pub fn build(data_dir: &Path, since: f64, until: f64, books: Option<&[Book; 3]>)
         let _ = writeln!(full, "## Na żywo\n\nBrak handlu na żywo w tym oknie.\n");
     }
     variants_section(&runs, &mut full, &mut short, &mut advice);
+    switch_section(&runs, &mut full, &mut short);
     if let Some(live) = live {
         agreement_section(live, &runs, &mut full);
     }

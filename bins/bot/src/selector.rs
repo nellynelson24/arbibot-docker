@@ -7,6 +7,7 @@ use serde_json::Value;
 use venues::{Book, Quote};
 
 const DAY_MS: f64 = 86_400_000.0;
+const HOUR_MS: f64 = 3_600_000.0;
 const MIN_DURATION_MS: f64 = 100.0;
 pub const MIN_VOLUME_USD: f64 = 250_000.0;
 pub const MAX_SPREAD_BPS: f64 = 30.0;
@@ -81,6 +82,68 @@ pub fn rank(
     let mut list: Vec<Candidate> = by_pair.into_values().collect();
     list.sort_by(|a, b| b.profit.total_cmp(&a.profit));
     list
+}
+
+pub fn rank_maker(data_dir: &Path, now_ms: f64, hours: f64, size: f64) -> Vec<Candidate> {
+    let since = now_ms - hours * HOUR_MS;
+    let mut by_pair: HashMap<String, Candidate> = HashMap::new();
+    let mut day = since;
+    while day <= now_ms + DAY_MS {
+        let path = data_dir
+            .join("maker")
+            .join(format!("{}.jsonl", utc_date(day)));
+        day += DAY_MS;
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for v in text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        {
+            let (Some(pair), Some(ts)) = (v["pair"].as_str(), v["ts_ms"].as_f64()) else {
+                continue;
+            };
+            if v["type"] != "fill"
+                || v["maker"] != "okx"
+                || v["hedge"] != "bybit"
+                || ts < since
+                || ts > now_ms
+            {
+                continue;
+            }
+            let c = by_pair.entry(pair.to_owned()).or_insert_with(|| Candidate {
+                pair: pair.to_owned(),
+                profit: 0.0,
+                gaps: 0,
+                buy_okx: 0,
+                buy_bybit: 0,
+            });
+            c.profit += v["edge_bps"].as_f64().unwrap_or(0.0) / 1e4 * size;
+            c.gaps += 1;
+            if v["side"] == "buy" {
+                c.buy_okx += 1;
+            } else {
+                c.buy_bybit += 1;
+            }
+        }
+    }
+    let mut list: Vec<Candidate> = by_pair.into_values().collect();
+    list.sort_by(|a, b| b.profit.total_cmp(&a.profit));
+    list
+}
+
+pub fn screened<'a>(
+    ranked: &'a [Candidate],
+    books: &[Book; 2],
+    quote: Option<&str>,
+    limit: usize,
+) -> Vec<(&'a Candidate, Option<String>)> {
+    ranked
+        .iter()
+        .filter(|c| quote.is_none_or(|q| c.pair.split_once('/').is_some_and(|(_, p)| p == q)))
+        .take(limit)
+        .map(|c| (c, liquidity_issue(&c.pair, books)))
+        .collect()
 }
 
 pub fn liquidity_issue(pair: &str, books: &[Book; 2]) -> Option<String> {
@@ -250,6 +313,66 @@ mod tests {
         assert!((ranked[0].profit - 0.04).abs() < 1e-12);
 
         assert_eq!(rank(&dir, now, 3, 35.0, 0.0, 10.0)[0].gaps, 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn picks_the_most_profitable_liquid_pair_from_the_maker_simulation_window() {
+        let dir = std::env::temp_dir().join(format!("federbot-maker-rank-{}", std::process::id()));
+        fs::create_dir_all(dir.join("maker")).unwrap();
+        let now = 1_792_108_800_000.0;
+        let fill = |pair: &str, hedge: &str, side: &str, ago_h: f64, bps: f64| {
+            format!(
+                r#"{{"type":"fill","ts_ms":{},"pair":"{pair}","maker":"okx","hedge":"{hedge}","side":"{side}","size":50.0,"edge_bps":{bps},"capital":400}}"#,
+                now - ago_h * HOUR_MS
+            )
+        };
+        let mut today = vec![
+            fill("ARB/USDC", "bybit", "buy", 20.0, 30.0),
+            fill("ARB/USDC", "bybit", "buy", 30.0, 30.0),
+            fill("WLD/USDC", "bitvavo", "buy", 1.0, 90.0),
+            fill("THIN/USDC", "bybit", "buy", 1.0, 80.0),
+            fill("BTC/EUR", "bybit", "sell", 1.0, 70.0),
+            fill("ARB/USDC", "bybit", "sell", 2.0, 5.0),
+            r#"{"type":"status","ts_ms":1}"#.to_owned(),
+        ];
+        for _ in 0..4 {
+            today.push(fill("ASTER/USDC", "bybit", "sell", 3.0, 7.5));
+        }
+        fs::write(
+            dir.join("maker").join(format!("{}.jsonl", utc_date(now))),
+            today.join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("maker")
+                .join(format!("{}.jsonl", utc_date(now - DAY_MS))),
+            fill("ARB/USDC", "bybit", "buy", 26.0, 300.0),
+        )
+        .unwrap();
+
+        let ranked = rank_maker(&dir, now, 12.0, 20.0);
+        let pairs: Vec<&str> = ranked.iter().map(|c| c.pair.as_str()).collect();
+        assert_eq!(pairs, ["THIN/USDC", "BTC/EUR", "ASTER/USDC", "ARB/USDC"]);
+        assert!((ranked[2].profit - 4.0 * 7.5e-4 * 20.0).abs() < 1e-12);
+        assert_eq!((ranked[2].gaps, ranked[2].buy_bybit), (4, 4));
+        assert!((ranked[3].profit - 0.01).abs() < 1e-12);
+
+        let b = books(&[
+            ("THIN/USDC", quote(1.0, 1.001, 1e6), quote(1.0, 1.001, 1e3)),
+            (
+                "BTC/EUR",
+                quote(9e4, 9.0001e4, 1e9),
+                quote(9e4, 9.0001e4, 1e9),
+            ),
+            ("ASTER/USDC", quote(1.0, 1.001, 1e6), quote(1.0, 1.001, 1e6)),
+            ("ARB/USDC", quote(0.2, 0.2001, 1e7), quote(0.2, 0.2001, 1e7)),
+        ]);
+        let screen = screened(&ranked, &b, Some("USDC"), 10);
+        let first = screen.iter().find(|(_, issue)| issue.is_none());
+        assert_eq!(first.map(|(c, _)| c.pair.as_str()), Some("ASTER/USDC"));
+        assert_eq!(screen[0].1.as_deref(), Some("obrót Bybit 1000 USD"));
+        assert!(screen.iter().all(|(c, _)| c.pair != "BTC/EUR"));
         fs::remove_dir_all(dir).unwrap();
     }
 }

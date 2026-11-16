@@ -20,11 +20,12 @@ impl Engine {
         }
         let current = format!("{}/{}", self.market.base, self.market.quote);
         println!("[{}] ocena par:", clock());
+        let selection = self.selection;
+        let quote = selection.maker.map(|_| self.market.quote.clone());
         let (ranked, best) = picks(
             &self.data_dir,
-            self.size,
-            self.min_bps,
-            self.route_limit,
+            &selection,
+            quote.as_deref(),
             &self.http,
             &self.accounts,
         )
@@ -45,13 +46,17 @@ impl Engine {
             )
         });
         let q = &self.market.quote;
+        let measure = match selection.maker {
+            Some((hours, _)) => format!("maker z {hours} h, na {REVIEW_DAYS} dni"),
+            None => format!("z {REVIEW_DAYS} dni"),
+        };
         let verdict = match &best {
             _ if streak >= SWITCH_STREAK => "zmieniam".to_owned(),
             Some(b) if streak > 0 => format!("{} lepsza ({streak}/{SWITCH_STREAK})", b.pair),
             _ => "zostaję".to_owned(),
         };
         let line = format!(
-            "obecna {current}: {now_profit:.3} {q}, najlepsza {}: {:.3} {q} (z {REVIEW_DAYS} dni), \
+            "obecna {current}: {now_profit:.3} {q}, najlepsza {}: {:.3} {q} ({measure}), \
              koszt zmiany ≈{cost:.2} {q} — {verdict}",
             best.as_ref().map_or("-", |b| b.pair.as_str()),
             best.as_ref().map_or(0.0, |b| b.profit),
@@ -68,6 +73,7 @@ impl Engine {
             "best_profit": best.as_ref().map(|b| b.profit),
             "switch_cost": cost,
             "streak": streak,
+            "measure": if selection.maker.is_some() { "maker" } else { "taker" },
         }))?;
         self.pending_switch = best
             .as_ref()
@@ -245,5 +251,25 @@ mod tests {
         assert_eq!(streak("CHIP/USDC", "STRK/USDC", 1.5, None), 1);
         assert_eq!(streak("CHIP/USDC", "STRK/USDC", 1.5, Some(&pending)), 2);
         assert_eq!(streak("CHIP/USDC", "KAIA/USDC", 1.5, Some(&pending)), 1);
+    }
+
+    #[test]
+    fn maker_window_profit_must_pay_back_the_switch_within_a_day() {
+        use super::super::market::per_review;
+        let cost = 0.4;
+        let streak = |aster_12h: f64| {
+            switch_streak(
+                "ARB/USDC",
+                per_review(0.01, 12.0),
+                "ASTER/USDC",
+                per_review(aster_12h, 12.0),
+                cost,
+                None,
+            )
+        };
+        assert!((per_review(0.15, 12.0) - 0.9).abs() < 1e-12);
+        assert_eq!(streak(0.15), 0);
+        assert_eq!(streak(0.20), 0);
+        assert_eq!(streak(0.25), 1);
     }
 }

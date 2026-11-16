@@ -64,6 +64,76 @@ pub(super) fn variants_section(
     }
 }
 
+const MAX_STATUS_GAP_MS: f64 = 300_000.0;
+
+fn pair_hours(run: &Run) -> Vec<(String, f64)> {
+    let mut hours: Vec<(String, f64)> = Vec::new();
+    let mut pair = run.pair();
+    let mut last: Option<f64> = None;
+    for row in &run.rows {
+        match row["type"].as_str() {
+            Some("start") => {
+                pair = row["pair"].as_str().map(str::to_owned).or(pair);
+                last = None;
+            }
+            Some("switch") => pair = row["to"].as_str().map(str::to_owned).or(pair),
+            Some("status") => {
+                pair = row["pair"].as_str().map(str::to_owned).or(pair);
+                let dt = last
+                    .map(|l| ts(row) - l)
+                    .filter(|dt| *dt <= MAX_STATUS_GAP_MS);
+                if let (Some(dt), Some(p)) = (dt, &pair) {
+                    match hours.iter_mut().find(|(q, _)| q == p) {
+                        Some(entry) => entry.1 += dt / 3_600_000.0,
+                        None => hours.push((p.clone(), dt / 3_600_000.0)),
+                    }
+                }
+                last = Some(ts(row));
+            }
+            _ => {}
+        }
+    }
+    hours.sort_by(|a, b| b.1.total_cmp(&a.1));
+    hours
+}
+
+pub(super) fn switch_section(runs: &[Run], full: &mut String, short: &mut String) {
+    let switching: Vec<&Run> = runs
+        .iter()
+        .filter(|r| {
+            r.start.as_ref().is_some_and(|s| s["switch"] == true) || !r.of("switch").is_empty()
+        })
+        .collect();
+    if switching.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        full,
+        "## Zmiana pary\n\n| Wariant | zmiany | koszt USDC | czas na parach |\n|---|---|---|---|"
+    );
+    for run in switching {
+        let switches = run.of("switch").len();
+        let cost = run.sum("switch", "cost") * run.usdc();
+        let time = pair_hours(run)
+            .iter()
+            .map(|(p, h)| format!("{p} {h:.1} h"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let time = if time.is_empty() {
+            "-".to_owned()
+        } else {
+            time
+        };
+        let _ = writeln!(full, "| {} | {switches} | {cost:.4} | {time} |", run.label);
+        let _ = writeln!(
+            short,
+            "{}: zmian pary {switches}, koszt {cost:.3}; {time}",
+            run.label
+        );
+    }
+    let _ = writeln!(full);
+}
+
 pub(super) fn agreement_section(live: &Run, runs: &[Run], full: &mut String) {
     let live_trades = live.trades();
     if live_trades.is_empty() {
@@ -102,4 +172,54 @@ pub(super) fn agreement_section(live: &Run, runs: &[Run], full: &mut String) {
         );
     }
     let _ = writeln!(full);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn switching_variant_shows_switches_their_cost_and_time_on_each_pair() {
+        let t0 = 1_792_800_000_000.0_f64;
+        let mut rows =
+            vec![json!({"type": "start", "ts_ms": t0, "pair": "ARB/USDC", "switch": true})];
+        for m in 1..=60 {
+            rows.push(json!({"type": "status", "ts_ms": t0 + f64::from(m) * 60_000.0, "pair": "ARB/USDC"}));
+        }
+        rows.push(json!({"type": "switch", "ts_ms": t0 + 3_610_000.0, "from": "ARB/USDC", "to": "ASTER/USDC", "cost": 0.35}));
+        for m in 61..=240 {
+            rows.push(json!({"type": "status", "ts_ms": t0 + f64::from(m) * 60_000.0, "pair": "ASTER/USDC"}));
+        }
+        rows.push(json!({"type": "maker_hedge", "ts_ms": t0 + 9e6, "pnl": 1.0}));
+        let run = Run {
+            label: "ab-switch".to_owned(),
+            live: false,
+            start: Some(
+                json!({"type": "start", "pair": "ARB/USDC", "switch": true, "review_hours": 1.0, "switch_maker_hours": 12.0}),
+            ),
+            prior_start: None,
+            rows,
+        };
+        assert!((run.total() - 0.65).abs() < 1e-12);
+        assert!(run.settings().contains("zmiana pary co 1 h (maker z 12 h)"));
+        let fixed = Run {
+            label: "ab-arb".to_owned(),
+            live: false,
+            start: Some(json!({"type": "start", "pair": "ARB/USDC"})),
+            prior_start: None,
+            rows: vec![json!({"type": "status", "ts_ms": t0})],
+        };
+        let (mut full, mut short) = (String::new(), String::new());
+        switch_section(&[run, fixed], &mut full, &mut short);
+        assert!(
+            full.contains("| ab-switch | 1 | 0.3500 | ASTER/USDC 3.0 h, ARB/USDC 1.0 h |"),
+            "{full}"
+        );
+        assert!(!full.contains("ab-arb"));
+        assert_eq!(
+            short.trim(),
+            "ab-switch: zmian pary 1, koszt 0.350; ASTER/USDC 3.0 h, ARB/USDC 1.0 h"
+        );
+    }
 }

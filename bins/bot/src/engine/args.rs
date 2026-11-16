@@ -76,6 +76,14 @@ pub struct Args {
     #[arg(help = "Co ile godzin oceniać pary (z --switch)")]
     pub(super) review_hours: f64,
     #[arg(long)]
+    #[arg(
+        help = "Wybór pary (na starcie i z --switch) według symulacji makera ze skanera (maker OKX, zabezpieczenie Bybit) z ostatnich H godzin, przeliczonej na --maker-size; z --pair ta para jest zapasowa. Bez opcji według okazji takera z 3 dni"
+    )]
+    pub(super) switch_maker_hours: Option<f64>,
+    #[arg(long)]
+    #[arg(help = "Wybór pary bez wymogu taniej trasy przelewu (salda wyrównuje handel)")]
+    pub(super) switch_any_route: bool,
+    #[arg(long)]
     #[arg(help = "Powiadomienia i komendy /stan, /stop przez Telegram")]
     pub(super) telegram: bool,
     #[arg(long)]
@@ -95,6 +103,16 @@ pub struct Args {
         help = "Maker po cenie progowej: zlecenie stale po cenie, przy której marża wobec książki Bybit równa się progowi (nie lepiej niż najlepsza cena OKX), przestawiane najwyżej co --requote-ms"
     )]
     pub(super) maker_rest: bool,
+    #[arg(long)]
+    #[arg(
+        help = "Na sucho: nowe zlecenie maker może się wypełnić dopiero po --okx-latency-ms, a anulowane albo przestawione jeszcze przez ten czas po starej cenie"
+    )]
+    pub(super) maker_latency: bool,
+    #[arg(long)]
+    #[arg(
+        help = "Na sucho: po wypełnieniu makera czekaj do N s na wypełnienie po przeciwnej stronie i zabezpieczaj na Bybit tylko różnicę; bez zabezpieczenia najwyżej jedno zlecenie maker"
+    )]
+    pub(super) maker_net_secs: Option<u64>,
     #[arg(long)]
     #[arg(
         help = "Ponawiaj zabezpieczenia makera także w pauzie i po zatrzymaniu (najwyżej co 10 s)"

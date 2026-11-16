@@ -127,7 +127,7 @@ struct Engine {
     last_trade_rebalance: Option<Instant>,
     http: reqwest::Client,
     data_dir: PathBuf,
-    route_limit: f64,
+    selection: market::Selection,
     switching: bool,
     pending_switch: Option<(String, u32)>,
     telegram: Option<Notifier>,
@@ -197,6 +197,9 @@ async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
     if !(0.0..=2.0).contains(&args.fee_scale) {
         bail!("--fee-scale musi być od 0 do 2 (podano {})", args.fee_scale);
     }
+    if live.is_some() && (args.maker_latency || args.maker_net_secs.is_some()) {
+        bail!("--maker-latency i --maker-net-secs działają tylko na sucho");
+    }
     let http = http()?;
     let accounts = Accounts {
         okx: Okx::new(http.clone(), Credentials::load(Venue::Okx, Scope::Read)?),
@@ -251,7 +254,7 @@ async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
         last_trade_rebalance: None,
         http,
         data_dir: args.data_dir.clone(),
-        route_limit: MAX_ROUTE_COST * args.capital,
+        selection: market::Selection::of(&args),
         switching: args.switch,
         pending_switch: None,
         telegram,
@@ -259,7 +262,11 @@ async fn run(args: Args, live: Option<LiveStart>) -> Result<()> {
         day_trades: 0,
         maker: args.maker.then(|| {
             let size = args.maker_size.unwrap_or(args.size);
-            Maker::new(size, args.maker_min_bps, args.requote_ms, args.maker_rest)
+            Maker::new(size, args.maker_min_bps, args.requote_ms, args.maker_rest).simulate(
+                args.maker_latency
+                    .then(|| Duration::from_millis(args.okx_latency_ms)),
+                args.maker_net_secs.map(Duration::from_secs),
+            )
         }),
         trades,
         maker_events: None,
@@ -377,6 +384,12 @@ impl Engine {
             "fees_taker": [self.market.fees[0].taker, self.market.fees[1].taker],
             "fees_maker": [self.market.fees[0].maker, self.market.fees[1].maker],
             "fee_scale": args.fee_scale,
+            "switch": args.switch,
+            "review_hours": args.review_hours,
+            "switch_maker_hours": args.switch_maker_hours,
+            "switch_any_route": args.switch_any_route,
+            "maker_latency": args.maker_latency,
+            "maker_net_secs": args.maker_net_secs,
         }))?;
         self.totals = totals::Totals::from_ledger(self.ledger.history());
         let started = self.start_text(args, label, mid);

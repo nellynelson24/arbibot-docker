@@ -297,13 +297,14 @@ impl Engine {
         for i in 0..2 {
             maker.spend(i, Spent::Other, now);
         }
-        for quote in &mut maker.quotes {
-            if let (Some(live), Some(id)) =
-                (&maker.live, quote.as_ref().and_then(|q| q.id.as_ref()))
-            {
+        for i in 0..2 {
+            if let (Some(live), Some(id)) = (
+                &maker.live,
+                maker.quotes[i].as_ref().and_then(|q| q.id.as_ref()),
+            ) {
                 live.cancel(id);
             }
-            *quote = None;
+            maker.replace(i, None, false, now);
         }
     }
 
@@ -323,6 +324,10 @@ impl Engine {
             .flat_map(|l| l.orders.iter())
             .filter(|(id, _)| !current.contains(&id.as_str()))
             .map(|(_, own)| (own.side, (own.qty - own.booked).max(0.0), own.price))
+            .chain(maker.ghosts.iter().map(|g| {
+                let side = [Side::Buy, Side::Sell][g.side];
+                (side, g.order.qty, g.order.price)
+            }))
             .collect()
     }
 

@@ -88,7 +88,16 @@ mod tests {
             .iter()
             .filter(|(_, words)| words.get(1).map(String::as_str) == Some("dry-run"))
             .collect();
-        for name in ["ab-pepe", "ab-arb-maker40", "ab-arb-rest", "ab-usdc-pln"] {
+        for name in [
+            "ab-pepe",
+            "ab-arb-maker40",
+            "ab-arb-rest",
+            "ab-usdc-pln",
+            "ab-switch",
+            "ab-arb-lat",
+            "ab-arb-rest-lat",
+            "ab-arb-net60",
+        ] {
             assert!(dry.iter().any(|(s, _)| s == name), "brak {name}");
         }
         let mut dirs = Vec::new();

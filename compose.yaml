@@ -79,6 +79,39 @@ services:
       --rebalance-max-cost-bps 30 --skew-bps 15 --maker-rest
       --data-dir data/ab-arb-rest
 
+  ab-arb-lat:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --maker-latency
+      --data-dir data/ab-arb-lat
+
+  ab-arb-rest-lat:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --maker-rest --maker-latency
+      --data-dir data/ab-arb-rest-lat
+
+  ab-arb-net60:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15 --maker-net-secs 60
+      --data-dir data/ab-arb-net60
+
+  ab-switch:
+    <<: *dry
+    command: >-
+      bot dry-run --pair ARB/USDC --capital 200 --size 40 --min-bps 40
+      --maker --maker-size 20 --maker-min-bps 20 --sequential --trade-rebalance --lazy-rebalance
+      --rebalance-max-cost-bps 30 --skew-bps 15
+      --switch --review-hours 1 --switch-maker-hours 12 --switch-any-route
+      --data-dir data/ab-switch
+
   ab-pepe:
     <<: *dry
     command: >-

@@ -228,6 +228,7 @@ impl Engine {
         }
         self.ledger.write(json!({
             "type": "status",
+            "pair": format!("{}/{}", self.market.base, self.market.quote),
             "signals": s.signals,
             "no_funds": s.no_funds,
             "trades": s.trades,

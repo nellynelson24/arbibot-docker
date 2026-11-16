@@ -16,6 +16,7 @@ use crate::paper::{Fill, Side};
 const HEDGE_SLIPPAGE: f64 = 0.005;
 const MAX_FAILED_HEDGES: u32 = 3;
 const REST_SLACK_BPS: f64 = 1e-6;
+const NET_LIMIT_SLACK: f64 = 0.01;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spent {
@@ -51,6 +52,13 @@ pub(super) struct Resting {
     pub(super) qty: f64,
     queue_ahead: f64,
     pub(super) id: Option<String>,
+    active_from: Option<Instant>,
+}
+
+pub(super) struct Ghost {
+    pub(super) side: usize,
+    pub(super) order: Resting,
+    until: Instant,
 }
 
 #[derive(Default)]
@@ -59,6 +67,9 @@ pub(super) struct Maker {
     min_bps: f64,
     requote: Duration,
     rest: bool,
+    latency: Option<Duration>,
+    net: Option<Duration>,
+    pub(super) ghosts: Vec<Ghost>,
     secs: [[f64; 5]; 2],
     spent_since: [Option<(Spent, Instant)>; 2],
     pub(super) quotes: [Option<Resting>; 2],
@@ -80,14 +91,117 @@ impl Maker {
         }
     }
 
+    pub(super) fn simulate(self, latency: Option<Duration>, net: Option<Duration>) -> Self {
+        Maker {
+            latency,
+            net,
+            ..self
+        }
+    }
+
     pub(super) fn reset(&mut self) {
         *self = Maker {
             size: self.size,
             min_bps: self.min_bps,
             requote: self.requote,
             rest: self.rest,
+            latency: self.latency,
+            net: self.net,
             ..Maker::default()
         };
+    }
+
+    pub(super) fn replace(&mut self, i: usize, quote: Option<Resting>, placed: bool, now: Instant) {
+        self.ghosts.retain(|g| g.until > now);
+        let old = std::mem::replace(&mut self.quotes[i], quote);
+        if let (Some(order), Some(latency)) = (old, self.latency)
+            && (placed || self.quotes[i].is_none())
+            && order.qty > 0.0
+        {
+            self.ghosts.push(Ghost {
+                side: i,
+                order,
+                until: now + latency,
+            });
+        }
+    }
+
+    pub(super) fn match_trade(
+        &mut self,
+        price: f64,
+        qty: f64,
+        now: Instant,
+    ) -> Vec<(Side, f64, f64)> {
+        self.ghosts.retain(|g| g.until > now);
+        let mut fills = Vec::new();
+        for side in [Side::Buy, Side::Sell] {
+            let i = index(side);
+            let mut orders: Vec<(Option<usize>, f64)> = self
+                .ghosts
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.side == i)
+                .map(|(k, g)| (Some(k), g.order.price))
+                .collect();
+            if let Some(q) = &self.quotes[i]
+                && q.active_from.is_none_or(|t| t <= now)
+            {
+                orders.push((None, q.price));
+            }
+            orders.sort_by(|a, b| match side {
+                Side::Buy => b.1.total_cmp(&a.1),
+                Side::Sell => a.1.total_cmp(&b.1),
+            });
+            let mut left = qty;
+            for (id, _) in orders {
+                let order = match id {
+                    Some(k) => &mut self.ghosts[k].order,
+                    None => self.quotes[i].as_mut().expect("checked above"),
+                };
+                let filled = match_trade(order, side, price, left);
+                if filled <= 0.0 {
+                    continue;
+                }
+                left -= filled;
+                fills.push((side, filled, order.price));
+                if id.is_none() && order.qty <= f64::EPSILON * filled {
+                    self.quotes[i] = None;
+                }
+            }
+        }
+        self.ghosts.retain(|g| g.order.qty > 0.0);
+        fills
+    }
+
+    pub(super) fn record_fill(&mut self, i: usize, qty: f64, cash: f64, now: Instant) {
+        self.unhedged[i] += qty;
+        self.unhedged_cash[i] += cash;
+        self.filled_at[i].get_or_insert(now);
+    }
+
+    pub(super) fn net(&mut self) -> Option<(f64, [f64; 2])> {
+        self.net?;
+        let qty = self.unhedged[0].min(self.unhedged[1]);
+        if qty <= 0.0 {
+            return None;
+        }
+        let cash = [0, 1].map(|i| self.unhedged_cash[i] * (qty / self.unhedged[i]).min(1.0));
+        for (i, part) in cash.iter().enumerate() {
+            self.unhedged[i] -= qty;
+            self.unhedged_cash[i] -= part;
+        }
+        Some((qty, cash))
+    }
+
+    pub(super) fn hedge_due(&self, i: usize, now: Instant) -> bool {
+        let Some(window) = self.net else {
+            return true;
+        };
+        if self.unhedged[i] <= 0.0 {
+            return false;
+        }
+        let waited = self.filled_at[i].is_none_or(|t| now.saturating_duration_since(t) >= window);
+        waited || self.unhedged_cash[i].abs() > self.size * (1.0 + NET_LIMIT_SLACK)
     }
 
     pub(super) fn spend(&mut self, i: usize, state: Spent, now: Instant) {
@@ -145,6 +259,7 @@ impl Engine {
         let mut next: [Option<Option<Resting>>; 2] = [None, None];
         let mut placed = [false; 2];
         let mut spent = [Spent::Other; 2];
+        let now = Instant::now();
         let (step, tick) = (self.market.step, self.market.tick[OKX]);
         {
             let okx = self.books[OKX].borrow();
@@ -169,7 +284,7 @@ impl Engine {
                 };
                 let mut current = maker.quotes[i]
                     .as_ref()
-                    .map(|q| (q.price, q.qty, q.queue_ahead, q.id.clone()));
+                    .map(|q| (q.price, q.qty, q.queue_ahead, q.id.clone(), q.active_from));
 
                 if let Some((price, ..)) = current {
                     let moved = match (rest, target) {
@@ -203,11 +318,12 @@ impl Engine {
                 );
                 next[i] = Some(match (reason, current) {
                     (Some(_), _) => None,
-                    (None, Some((price, qty, queue_ahead, id))) => Some(Resting {
+                    (None, Some((price, qty, queue_ahead, id, active_from))) => Some(Resting {
                         price,
                         qty,
                         queue_ahead,
                         id,
+                        active_from,
                     }),
                     (None, None) if can_place => {
                         placed[i] = true;
@@ -220,6 +336,7 @@ impl Engine {
                                 best_qty
                             },
                             id: None,
+                            active_from: maker.latency.map(|l| now + l),
                         })
                     }
                     (None, None) => None,
@@ -232,10 +349,9 @@ impl Engine {
             }
         }
         let maker = self.maker.as_mut().expect("checked above");
-        let now = Instant::now();
         for i in 0..2 {
             if let Some(quote) = next[i].take() {
-                maker.quotes[i] = quote;
+                maker.replace(i, quote, placed[i], now);
             }
             if placed[i] {
                 maker.last_quoted[i] = Some(now);
@@ -320,22 +436,7 @@ impl Engine {
         let Some(maker) = &mut self.maker else {
             return Ok(());
         };
-        let mut filled_sides = Vec::new();
-        for side in [Side::Buy, Side::Sell] {
-            let i = index(side);
-            let Some(quote) = &mut maker.quotes[i] else {
-                continue;
-            };
-            let qty = match_trade(quote, side, trade.price, trade.qty);
-            if qty <= 0.0 {
-                continue;
-            }
-            let price = quote.price;
-            if quote.qty <= f64::EPSILON * qty {
-                maker.quotes[i] = None;
-            }
-            filled_sides.push((side, qty, price));
-        }
+        let filled_sides = maker.match_trade(trade.price, trade.qty, Instant::now());
         for &(side, qty, price) in &filled_sides {
             self.book_maker_fill(
                 side,
@@ -344,10 +445,68 @@ impl Engine {
                 ("trade", json!([trade.price, trade.qty])),
             )?;
         }
-        for (side, ..) in filled_sides {
-            self.hedge(side).await?;
+        if !filled_sides.is_empty() {
+            self.net_maker()?;
+        }
+        for side in [Side::Buy, Side::Sell] {
+            if filled_sides.iter().any(|f| f.0 == side) {
+                self.hedge(side).await?;
+            }
         }
         Ok(())
+    }
+
+    fn net_maker(&mut self) -> Result<()> {
+        let (step, min_qty, min_notional) = (
+            self.market.step,
+            self.market.min_qty,
+            self.market.min_notional,
+        );
+        let Some(maker) = &mut self.maker else {
+            return Ok(());
+        };
+        let first = match maker.filled_at {
+            [Some(buy), Some(sell)] if sell < buy => 1,
+            _ => 0,
+        };
+        let Some((qty, cash)) = maker.net() else {
+            return Ok(());
+        };
+        let prices = cash.map(|c| c.abs() / qty);
+        for (i, &at) in prices.iter().enumerate() {
+            if below_minimum(maker.unhedged[i], at, step, (min_qty, min_notional)) {
+                maker.filled_at[i] = None;
+            }
+        }
+        let pnl = cash[0] + cash[1];
+        let notional = cash[first].abs();
+        self.stats.maker_hedges += 1;
+        self.stats.maker_pnl += pnl;
+        self.stats.pnl += pnl;
+        self.day_pnl += pnl;
+        self.day_trades += 1;
+        self.totals.add(Kind::Maker, pnl);
+        println!(
+            "[{}] maker: netowanie {qty:.4} {} kupna po {} i sprzedaży po {} na OKX EEA bez zabezpieczenia: wynik {pnl:+.4} {} ({:+.1} bp)",
+            clock(),
+            self.market.base,
+            price(prices[0]),
+            price(prices[1]),
+            self.market.quote,
+            pnl / notional * 1e4
+        );
+        self.ledger.write(json!({
+            "type": "maker_hedge",
+            "net": true,
+            "side": side_id([Side::Buy, Side::Sell][first]),
+            "qty": qty,
+            "net_price": prices[1 - first],
+            "pnl": pnl,
+            "pnl_bps": pnl / notional * 1e4,
+            "missed": 0.0,
+        }))?;
+        self.last_tick_ms = now_ms();
+        self.check_loss_limit()
     }
 
     pub(super) fn book_maker_fill(
@@ -361,10 +520,7 @@ impl Engine {
         let fee = self.market.fees[OKX].maker;
         let cash = self.inventory.wallets[OKX].book(side, qty, value, fee);
         if let Some(maker) = &mut self.maker {
-            let i = index(side);
-            maker.unhedged[i] += qty;
-            maker.unhedged_cash[i] += cash;
-            maker.filled_at[i].get_or_insert_with(Instant::now);
+            maker.record_fill(index(side), qty, cash, Instant::now());
         }
         self.stats.maker_fills += 1;
         let mut line = json!({
@@ -384,6 +540,9 @@ impl Engine {
         let Some(maker) = &self.maker else {
             return Ok(());
         };
+        if !maker.hedge_due(i, Instant::now()) {
+            return Ok(());
+        }
         let m = &self.market;
         let qty = floor_to(maker.unhedged[i], m.step);
         let since_fill_ms = maker.filled_at[i].map(|t| t.elapsed().as_secs_f64() * 1e3);
@@ -803,7 +962,100 @@ mod tests {
             qty,
             queue_ahead,
             id: None,
+            active_from: None,
         }
+    }
+
+    #[test]
+    fn with_latency_a_cancelled_order_still_fills_at_the_old_price_until_the_window_ends() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut maker = Maker::new(20.0, 20.0, 1_000, false).simulate(Some(ms(150)), None);
+        maker.replace(0, Some(resting(10.0, 0.0)), true, t0);
+        maker.replace(0, None, false, t0);
+        assert!(maker.quotes[0].is_none());
+        assert_eq!(
+            maker.match_trade(1.0, 4.0, t0 + ms(100)),
+            vec![(Side::Buy, 4.0, 1.0)]
+        );
+        assert!(maker.match_trade(1.0, 4.0, t0 + ms(200)).is_empty());
+        assert!(maker.ghosts.is_empty());
+
+        let late = Resting {
+            active_from: Some(t0 + ms(150)),
+            ..resting(10.0, 0.0)
+        };
+        maker.replace(1, Some(late), true, t0);
+        assert!(maker.match_trade(1.0, 3.0, t0 + ms(100)).is_empty());
+        assert_eq!(
+            maker.match_trade(1.0, 3.0, t0 + ms(160)),
+            vec![(Side::Sell, 3.0, 1.0)]
+        );
+
+        let mut instant = Maker::new(20.0, 20.0, 1_000, false);
+        instant.replace(0, Some(resting(10.0, 0.0)), true, t0);
+        instant.replace(0, None, false, t0);
+        assert!(instant.match_trade(1.0, 4.0, t0).is_empty());
+    }
+
+    #[test]
+    fn a_requoted_order_and_its_ghost_share_one_trade_by_price() {
+        let t0 = Instant::now();
+        let mut maker =
+            Maker::new(20.0, 20.0, 1_000, false).simulate(Some(Duration::from_millis(150)), None);
+        maker.replace(0, Some(resting(10.0, 0.0)), true, t0);
+        let better = Resting {
+            price: 1.01,
+            ..resting(10.0, 0.0)
+        };
+        maker.replace(0, Some(better), true, t0);
+        assert_eq!(
+            maker.match_trade(0.99, 15.0, t0),
+            vec![(Side::Buy, 10.0, 1.01), (Side::Buy, 5.0, 1.0)]
+        );
+        assert!(maker.quotes[0].is_none());
+    }
+
+    #[test]
+    fn opposite_fills_inside_the_window_net_out_without_a_hedge() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut maker = Maker::new(20.0, 20.0, 1_000, false).simulate(None, Some(s(60)));
+        maker.record_fill(0, 100.0, -20.016, t0);
+        assert!(!maker.hedge_due(0, t0 + s(10)));
+        maker.record_fill(1, 100.0, 20.1, t0 + s(10));
+        let (qty, cash) = maker.net().expect("netowanie");
+        assert_eq!(qty, 100.0);
+        assert!((cash[0] + cash[1] - 0.084).abs() < 1e-9);
+        assert_eq!(maker.unhedged, [0.0, 0.0]);
+        for i in 0..2 {
+            assert!(!maker.hedge_due(i, t0 + s(11)));
+            assert!(!maker.hedge_due(i, t0 + s(120)));
+        }
+        assert!(maker.net().is_none());
+
+        let mut alone = Maker::new(20.0, 20.0, 1_000, false).simulate(None, Some(s(60)));
+        alone.record_fill(0, 100.0, -20.016, t0);
+        assert!(alone.net().is_none());
+        assert!(!alone.hedge_due(0, t0 + s(59)));
+        assert!(alone.hedge_due(0, t0 + s(61)));
+
+        alone.record_fill(0, 100.0, -20.016, t0 + s(5));
+        assert!(alone.hedge_due(0, t0 + s(6)));
+
+        let mut partial = Maker::new(20.0, 20.0, 1_000, false).simulate(None, Some(s(60)));
+        partial.record_fill(0, 100.0, -20.0, t0);
+        partial.record_fill(1, 40.0, 8.2, t0 + s(1));
+        let (qty, cash) = partial.net().expect("netowanie");
+        assert_eq!(qty, 40.0);
+        assert!((cash[0] + 8.0).abs() < 1e-9);
+        assert!((partial.unhedged[0] - 60.0).abs() < 1e-9);
+        assert!((partial.unhedged_cash[0] + 12.0).abs() < 1e-9);
+        assert!(!partial.hedge_due(0, t0 + s(30)));
+        assert!(partial.hedge_due(0, t0 + s(60)));
+
+        let plain = Maker::new(20.0, 20.0, 1_000, false);
+        assert!(plain.hedge_due(0, t0));
     }
 
     #[test]
